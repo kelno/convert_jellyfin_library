@@ -293,14 +293,52 @@ def get_subtitle_flags(job: Job) -> list:
             "-ignore_unknown"
         ])
 
-    # Set language metadata if available
-    for i, sub in enumerate(subs):
-        lang = sub.get("tags", {}).get("language", "und")
-        flags.extend([f"-metadata:s:s:{i}", f"language={lang}"])
+    return flags
+
+def get_audio_flags(job: Job) -> list:
+    flags = []
+
+    flags.extend(
+        [
+            "-map",
+            "0:a:0",
+        ]
+    )
+
+    if job.encoder_options.encode_audio:
+        flags.extend(
+            [
+                "-c:a:0",
+                "aac",
+                "-ac:0",
+                "2",
+            ]
+        )
+    else:
+        flags.extend(
+            [
+                "-c:a:0",
+                "copy",
+            ]
+        )
+
+    flags.extend(
+        [
+            "-map",
+            "0:a:1?",
+            "-c:a:1",
+            "copy",
+            "-map",
+            "0:a:2?",
+            "-c:a:2",
+            "copy",
+        ]
+    )
 
     return flags
 
 def build_encode_cmd(job: Job):
+
     cmd = [
         "ffmpeg",
         "-hide_banner",
@@ -310,10 +348,21 @@ def build_encode_cmd(job: Job):
         "-y",
         "-i",
         str(job.src),
+    ]
+
+    srt_file = job.src.with_suffix(".srt")
+    if srt_file.exists():
+        print(f'Found subtitle {srt_file}')
+        cmd.extend([
+            "-i", str(srt_file),
+            "-map", "1:s",
+        ])
+
+    cmd.extend([
         "-map",
         "0:v:0",
-    ]
-    
+    ])
+
     if job.encoder_options.encode_video:
         vfilters = []
 
@@ -390,42 +439,7 @@ def build_encode_cmd(job: Job):
             ]
         )
 
-    cmd.extend(
-        [
-            "-map",
-            "0:a:0",
-        ]
-    )
-    if job.encoder_options.encode_audio and False:
-        cmd.extend(
-            [  
-                "-c:a:0",
-                "aac",
-                "-ac:0",
-                "2",
-            ]
-        )
-    else:
-        cmd.extend(
-            [
-                "-c:a:0",
-                "copy",
-            ]
-        )
-
-    cmd.extend(
-        [
-            "-map",
-            "0:a:1?",
-            "-c:a:1",
-            "copy",
-            "-map",
-            "0:a:2?",
-            "-c:a:2",
-            "copy",
-        ]
-    )
-
+    cmd.extend(get_audio_flags(job))
     cmd.extend(get_subtitle_flags(job))
     
     tmp_out = job.dst.with_stem(job.dst.stem + ".tmp")
