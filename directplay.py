@@ -352,8 +352,16 @@ def build_encode_cmd(job: Job):
             )
 
     cmd.extend([
+        "-fflags",
+        "+genpts+fastseek",
+        "-f",
+        "matroska",
         "-i",
         str(job.src),
+        "-movflags",
+        "+faststart",
+        "-g",
+        "60",
         "-map",
         "0:v:0",
     ])
