@@ -114,10 +114,10 @@ def classify(job) -> tuple[Action, EncodeOptions]:
         log("⚠", C.YEL, "No video stream; skipping", job.src)
         return Action.SKIP, encode_options
 
-    if job.opts.skipaudio is False and not has_aac_stereo(streams):
+    if job.opts.skip_audio is False and not has_aac_stereo(streams):
         encode_options.encode_audio = True
 
-    if job.opts.skipvideo is False and not is_h264_ok(v):
+    if job.opts.skip_video is False and not is_h264_ok(v):
         encode_options.encode_video = True
 
     if job.src.suffix.lower() == ".mkv" and not encode_options.encode_video and not encode_options.encode_audio:
@@ -390,7 +390,7 @@ def build_encode_cmd(job: Job):
                 "-c:v",
                 "libx264",
                 "-preset",
-                job.opts.preset,
+                job.opts.hvenc_preset,
                 "-crf",
                 str(job.opts.crf),
             ]
@@ -531,7 +531,7 @@ def gather_files(roots, exts, limit: int) -> List[Path]:
             if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in exts and not any(
                     ignore in p.name for ignore in IGNORE_SUFFIXES):
                 files.append(p)
-                if limit is not 0 and len(files) >= limit:
+                if limit != 0 and len(files) >= limit:
                     return files
 
     return files
@@ -624,7 +624,7 @@ def main():
 
     # -- Detect hardware encoder once --------------------------
     encoders = run(["ffmpeg", "-v", "quiet", "-encoders"])
-    opts.encoder = "h264_nvenc" if (opts.gpu is True and "h264_nvenc" in encoders) else "libx264"
+    opts.encoder = "h264_nvenc" if (opts.hvenc is True and "h264_nvenc" in encoders) else "libx264"
 
     # quick helper for preset mapping when NVENC is active
     def _nv_map(x):
@@ -647,7 +647,7 @@ def main():
         return map_[x]  # Explicit dict access now safe
 
     # Add the NVENC preset mapping to the options
-    opts.nv_preset = _nv_map(opts.preset)
+    opts.nv_preset = _nv_map(opts.hvenc_preset)
 
     exts = {e if e.startswith(".") else f".{e}" for e in opts.exts.split(",")}
 
