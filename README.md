@@ -59,8 +59,7 @@ options:
   -d, --delete-original
                         Remove source file after successful processing. (default: False)
   --hvenc {true,false}  Use NVIDIA hvenc if possible. (default: false)
-  --hvenc-preset HVENC_PRESET
-                        hvenc preset: ultrafast…slow. (default: medium)
+  --preset PRESET       preset: ultrafast…slow. Will be converted to p* for h264_nvenc (default: medium)
   --skip-video, -sv     Never transcode video. (default: False)
   --skip-audio, --sa    Never transcode video. (default: False)
   --exts EXTS           Comma-separated list of file extensions to consider. (default: .mp4,.mkv)

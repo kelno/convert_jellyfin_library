@@ -14,13 +14,12 @@ from enum import Enum
 from pathlib import Path
 from typing import List
 
-GO BACK TO MP4;
-
 # ------------------------- pretty logging ------------------------------ #
 class EncodeOptions:
-    def __init__(self, encode_audio: bool, encode_video: bool):
+    def __init__(self, encode_audio: bool, encode_video: bool, encode_subtitles: bool):
         self.encode_audio = encode_audio
         self.encode_video = encode_video
+        self.encode_subtitles = encode_subtitles
 
 
 class Action(Enum):
@@ -53,13 +52,16 @@ def setup_ffmpeg_path():
     print(f"Added script directory to PATH: {script_dir}")
 
 
+# good source for choices https://jellyfin.org/docs/general/clients/codec-support
+
 # ---------------------------- constants ---------------------------------- #
 
 DEFAULT_EXTS = {".mkv", ".mp4"}
 IGNORE_SUFFIXES = {'.bak', '.tmp'}  # Files containing these will be skipped
 H264_LEVEL_THRESHOLD = 41  # High 4.1 is Chromecast safe
 MAX_HEIGHT = 1080  # Down-scale 4 K → 1080p to stay in 4.1
-
+TARGET_CONTAINER = '.mp4'
+TARGET_SUBTITLE_FORMAT = 'mov_text'
 
 # ------------------------------------------------------------------------- #
 
@@ -89,6 +91,15 @@ def ffprobe(path: Path) -> dict:
 
 # ---------------------- util: decision helpers --------------------------- #
 
+def are_subtitles_ok(streams: List[dict]) -> bool:
+    subs = [s for s in streams if s["codec_type"] == "subtitle"]
+
+    if not subs:
+        return True  # No subs → no flags needed
+
+    # ok if every sub is already target format
+    return all(s["codec_name"] == TARGET_SUBTITLE_FORMAT for s in subs)
+
 
 def is_h264_ok(v: dict) -> bool:
     return (
@@ -110,7 +121,7 @@ def classify(job) -> tuple[Action, EncodeOptions]:
     Decide what to do with `job.src`.
     Returns: Action
     """
-    encode_options = EncodeOptions(False, False)
+    encode_options = EncodeOptions(False, False, False)
 
     streams = job.meta["streams"]
     v = next((s for s in streams if s["codec_type"] == "video"), None)
@@ -124,14 +135,14 @@ def classify(job) -> tuple[Action, EncodeOptions]:
     if job.opts.skip_video is False and not is_h264_ok(v):
         encode_options.encode_video = True
 
-    if job.src.suffix.lower() == ".mkv" and not encode_options.encode_video and not encode_options.encode_audio:
+    if job.opts.skip_subtitles is False and not are_subtitles_ok(streams):
+        encode_options.encode_subtitles = True
+
+    if job.src.suffix.lower() == TARGET_CONTAINER and not encode_options.encode_video and not encode_options.encode_audio and not encode_options.encode_subtitles:
         return Action.SKIP, encode_options
 
-    if encode_options.encode_video or encode_options.encode_audio:
-        return Action.ENCODE, encode_options
-
-    # Remux path: codecs OK but container wrong
-    return Action.REMUX, encode_options
+    # Some remux or transcode to do
+    return Action.ENCODE, encode_options
 
 
 # ----------------------------- job type ---------------------------------- #
@@ -187,7 +198,7 @@ class Job:
                 print(f"⚠️  Unreadable or non-video file, skipping {src}")
                 self.action = Action.SKIP
 
-        self.dst = src.with_suffix(".mkv") if self.action != Action.SKIP else None
+        self.dst = src.with_suffix(TARGET_CONTAINER) if self.action != Action.SKIP else None
 
 
 # --------------------------- worker logic -------------------------------- #
@@ -205,7 +216,7 @@ def looks_ok(path: Path) -> bool:
         if v is None:
             return False
 
-        container_ok = path.suffix.lower() == ".mkv"
+        container_ok = path.suffix.lower() == TARGET_CONTAINER
         video_ok = is_h264_ok(v)
         audio_ok = has_aac_stereo(streams)
 
@@ -225,25 +236,24 @@ def is_stub(p: Path) -> bool:
 
 def get_subtitle_flags(job: Job) -> list:
     """Returns FFmpeg flags based existing subtitle streams"""
+
     flags = []
-    subs = [s for s in job.meta["streams"] if s["codec_type"] == "subtitle"]
 
-    if not subs:
-        return flags  # No subs → no flags needed
-
-    # Case 1: Already srt (MP4/MKV) → copy as-is
-    if all(s["codec_name"] == "srt" for s in subs):
+    if job.encoder_options.encode_subtitles:
         flags.extend([
-            "-map", "0:s?",
-            "-c:s", "copy",
-            "-disposition:s", "0"  # Reset defaults
+            "-map",
+            "0:s?",
+            "-c:s",
+            TARGET_SUBTITLE_FORMAT,
+            "-ignore_unknown"
         ])
-
-    # Case 2: Convert text subs (mov_text/ASS) to srt
     else:
+        # That's fine if there are none
         flags.extend([
-            "-map", "0:s?",
-            "-c:s", "srt",  # Preferred format for MKV
+            "-map",
+            "0:s?",
+            "-c:s",
+            TARGET_SUBTITLE_FORMAT,
             "-ignore_unknown"
         ])
 
@@ -349,8 +359,6 @@ def build_encode_cmd(job: Job):
     cmd.extend([
         "-fflags",
         "+genpts+fastseek",
-        "-f",
-        "matroska",
         "-i",
         str(job.src),
         "-movflags",
@@ -360,14 +368,6 @@ def build_encode_cmd(job: Job):
         "-map",
         "0:v:0",
     ])
-
-    srt_file = job.src.with_suffix(".srt")
-    if srt_file.exists():
-        print(f'Found subtitle {srt_file}')
-        cmd.extend([
-            "-i", str(srt_file),
-            "-map", "1:s",
-        ])
 
     if job.encoder_options.encode_video:
         vfilters = []
@@ -393,9 +393,11 @@ def build_encode_cmd(job: Job):
                 "-c:v",
                 "libx264",
                 "-preset",
-                job.opts.hvenc_preset,
+                job.opts.preset,
                 "-crf",
                 str(job.opts.crf),
+                "-pix_fmt",
+                "yuv420p",  # Enforce 8bit format for firefox compatibility
             ]
         elif job.opts.encoder == "h264_nvenc":
             video_flags = [
@@ -403,7 +405,7 @@ def build_encode_cmd(job: Job):
                 "-c:v",
                 "h264_nvenc",
                 "-preset",
-                job.opts.nv_preset,
+                job.opts.nvenc_preset,
                 "-rc",
                 "vbr",
                 "-tune",
@@ -435,6 +437,14 @@ def build_encode_cmd(job: Job):
                 "copy",
             ]
         )
+
+    srt_file = job.src.with_suffix(".srt")
+    if srt_file.exists():
+        print(f'Found subtitle {srt_file}')
+        cmd.extend([
+            "-i", str(srt_file),
+            "-map", "1:s",
+        ])
 
     cmd.extend(get_audio_flags(job))
     cmd.extend(get_subtitle_flags(job))
@@ -473,29 +483,12 @@ def process(job: Job):
             job.dst.unlink()
 
     # 3) Build the ffmpeg command
-    if job.action == Action.REMUX:
-        tmp_out = job.dst.with_stem(job.dst.stem + ".tmp")
-        cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-xerror",
-            "-y",
-            "-i",
-            str(job.src),
-            "-c",
-            "copy",
-            "-map_metadata",
-            "0",
-            tmp_out,
-        ]
-    else:
+    if job.action == Action.ENCODE:
         cmd, tmp_out = build_encode_cmd(job)
 
     log_action = str(job.action)
     if job.action == Action.ENCODE:
-        log_action += f" (video: {job.encoder_options.encode_video}, audio: {job.encoder_options.encode_audio})"
+        log_action += f" (video: {job.encoder_options.encode_video}, audio: {job.encoder_options.encode_audio}, subtitles: {job.encoder_options.encode_subtitles})"
 
     log("→", C.CYN, log_action, job.src)
 
@@ -579,9 +572,9 @@ def main():
         help="Use NVIDIA hvenc if possible.",
     )
     p.add_argument(
-        "--hvenc-preset",
+        "--preset",
         default="medium",
-        help="hvenc preset: ultrafast…slow.",
+        help="preset: ultrafast…slow. Will be converted to p* for h264_nvenc",
     )
     p.add_argument(
         "--skip-video",
@@ -589,6 +582,13 @@ def main():
         action='store_true',
         default=False,
         help="Never transcode video.",
+    )
+    p.add_argument(
+        "--skip-subtitles",
+        "-ss",
+        action='store_true',
+        default=False,
+        help="Never transcode subtitles.",
     )
     p.add_argument(
         "--skip-audio",
@@ -644,13 +644,13 @@ def main():
         }
         if x not in map_:
             raise ValueError(
-                f"Unsupported NVENC preset: '{x}'. "
+                f"Unsupported preset for NVENC conversion: '{x}'. "
                 f"Valid options are: {', '.join(map_.keys())}"
             )
         return map_[x]  # Explicit dict access now safe
 
     # Add the NVENC preset mapping to the options
-    opts.nv_preset = _nv_map(opts.hvenc_preset)
+    opts.nvenc_preset = _nv_map(opts.preset)
 
     exts = {e if e.startswith(".") else f".{e}" for e in opts.exts.split(",")}
 
