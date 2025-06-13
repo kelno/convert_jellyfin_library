@@ -17,7 +17,7 @@ Key features
   limit to keep the box responsive.
 • Quality knobs – --crf and --preset expose x264 controls; defaults
   tuned for "Netflix-like" 1080 p quality.
-• Safe by default – outputs <name>.mp4 in the same folder; originals
+• Safe by default – outputs <name>.mkv in the same folder; originals
   retained unless you add --delete-original true.
 • Idempotent – re-runs skip files already compliant; perfect for
   nightly cron/systemd-timer jobs.
@@ -71,9 +71,19 @@ import subprocess
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import List
+from enum import Enum
+import shlex
 
 # ------------------------- pretty logging ------------------------------ #
+class EncodeOptions:
+    def __init__(self, encode_audio: bool, encode_video: bool):
+        self.encode_audio = encode_audio
+        self.encode_video = encode_video
 
+class Action(Enum):
+    SKIP = "skip"
+    REMUX = "remux"
+    ENCODE = "encode"
 
 class C:
     RESET = "\033[0m"
@@ -90,6 +100,7 @@ def log(symbol: str, color: str, action: str, path: Path):
 # ---------------------------- constants ---------------------------------- #
 
 DEFAULT_EXTS = {".mkv", ".mp4"}
+IGNORE_SUFFIXES = {'.bak', '.tmp'}  # Files containing these will be skipped
 H264_LEVEL_THRESHOLD = 41  # High 4.1 is Chromecast safe
 MAX_HEIGHT = 1080  # Down-scale 4 K → 1080p to stay in 4.1
 AUDIO_CHANNELS = 2  # stereo AAC
@@ -138,28 +149,36 @@ def has_aac_stereo(streams: List[dict]) -> bool:
     return False
 
 
-def classify(job) -> str:
+def classify(job) -> tuple[Action, EncodeOptions]:
     """
     Decide what to do with `job.src`.
-    Returns: "skip", "remux", or "encode".
+    Returns: Action
     """
+    encode_options = EncodeOptions(False, False)
+
     streams = job.meta["streams"]
     v = next((s for s in streams if s["codec_type"] == "video"), None)
     if v is None:  # no video stream at all
         log("⚠", C.YEL, "No video stream; skipping", job.src)
-        return "skip"
+        return Action.SKIP, encode_options
 
     direct_ok = (
-        job.src.suffix.lower() == ".mp4" and is_h264_ok(v) and has_aac_stereo(streams)
+        job.src.suffix.lower() == ".mkv" and is_h264_ok(v) and has_aac_stereo(streams)
     )
     if direct_ok:
-        return "skip"
+        return Action.SKIP, encode_options
 
     # Remux path: codecs OK but container wrong
     if is_h264_ok(v) and has_aac_stereo(streams):
-        return "remux"
+        return Action.REMUX, encode_options
 
-    return "encode"
+    if not has_aac_stereo(streams):
+        encode_options.encode_audio = True
+    
+    if not is_h264_ok(v):
+        encode_options.encode_video = True
+
+    return Action.ENCODE, encode_options
 
 
 # ----------------------------- job type ---------------------------------- #
@@ -171,7 +190,7 @@ class Job:
         self.opts = opts
         try:
             self.meta = ffprobe(src)
-            self.action = classify(self)
+            self.action, self.encoder_options = classify(self)
         except subprocess.CalledProcessError:
             # Attempt auto-repair for MP4/MOV/M4V files with corrupted headers
             if src.suffix.lower() in {".mp4", ".m4v", ".mov"}:
@@ -194,10 +213,10 @@ class Job:
                     tmp.rename(src)  # swap in the repaired file
                     print(f"✓  Successfully repaired: {src}")
                     self.meta = ffprobe(src)
-                    self.action = classify(self)  # try again
+                    self.action, self.encoder_options = classify(self)  # try again
                 else:
                     print(f"⚠️  Repair failed, skipping: {src}")
-                    self.action = "skip"
+                    self.action = Action.SKIP
             # For MKV/WebM, try a simple remux
             elif src.suffix.lower() in {".mkv", ".webm"}:
                 print(f"⚠️  Attempting to remux corrupted container: {src}")
@@ -207,22 +226,22 @@ class Job:
                     tmp.rename(src)  # swap in the remuxed file
                     print(f"✓  Successfully remuxed: {src}")
                     self.meta = ffprobe(src)
-                    self.action = classify(self)  # try again
+                    self.action, self.encoder_options = classify(self)  # try again
                 else:
                     print(f"⚠️  Remux failed, skipping: {src}")
-                    self.action = "skip"
+                    self.action = Action.SKIP
             else:
                 print(f"⚠️  Unreadable or non-video file, skipping {src}")
-                self.action = "skip"
-        self.dst = src.with_suffix(".mp4") if self.action != "skip" else None
-
+                self.action = Action.SKIP
+                
+        self.dst = src.with_suffix(".mkv") if self.action != Action.SKIP else None
 
 # --------------------------- worker logic -------------------------------- #
 
 
 def looks_ok(path: Path) -> bool:
     """
-    Return True only if `path` is a playable MP4 that already
+    Return True only if `path` is a playable MKV that already
     satisfies the direct-play profile (container + codecs).
     """
     try:
@@ -232,7 +251,7 @@ def looks_ok(path: Path) -> bool:
         if v is None:
             return False
 
-        container_ok = path.suffix.lower() == ".mp4"
+        container_ok = path.suffix.lower() == ".mkv"
         video_ok = is_h264_ok(v)
         audio_ok = has_aac_stereo(streams)
 
@@ -250,52 +269,38 @@ def is_stub(p: Path) -> bool:
         return True
 
 
-def build_encode_cmd(job: Job):
-    vfilters = []
-    v = next(s for s in job.meta["streams"] if s["codec_type"] == "video")
-    need_downscale = int(v.get("coded_height", 0)) > MAX_HEIGHT
+def get_subtitle_flags(job: Job) -> list:
+    """Returns FFmpeg flags based on actual subtitle streams"""
+    flags = []
+    subs = [s for s in job.meta["streams"] if s["codec_type"] == "subtitle"]
 
-    # Only use the CUDA scaler if we also decoded on CUDA (i.e. input was H.264)
-    if job.opts.encoder == "h264_nvenc" and v.get("codec_name") == "h264":
-        if need_downscale:
-            vfilters.append(f"scale_cuda=-2:{MAX_HEIGHT}:format=yuv420p")
-        else:
-            vfilters.append("scale_cuda=format=yuv420p")
+    if not subs:
+        return flags  # No subs → no flags needed
+
+    # Case 1: Already srt (MP4/MKV) → copy as-is
+    if all(s["codec_name"] == "srt" for s in subs):
+        flags.extend([
+            "-map", "0:s?",
+            "-c:s", "copy",
+            "-disposition:s", "0"  # Reset defaults
+        ])
+
+    # Case 2: Convert text subs (mov_text/ASS) to srt
     else:
-        # either CPU‐only path or non‐H.264 input → use normal scale
-        if need_downscale:
-            vfilters.append(f"scale=-2:{MAX_HEIGHT}")
+        flags.extend([
+            "-map", "0:s?",
+            "-c:s", "srt",  # Preferred format for MKV
+            "-ignore_unknown"
+        ])
 
-    vf = ",".join(vfilters) if vfilters else None
+    # Set language metadata if available
+    for i, sub in enumerate(subs):
+        lang = sub.get("tags", {}).get("language", "und")
+        flags.extend([f"-metadata:s:s:{i}", f"language={lang}"])
 
-    # -------- encoder-specific branch --------
-    if job.opts.encoder == "libx264":
-        video_flags = [
-            "-c:v",
-            "libx264",
-            "-preset",
-            job.opts.preset,
-            "-crf",
-            str(job.opts.crf),
-        ]
-    else:  # h264_nvenc
-        video_flags = [
-            # --- NVENC encode flags ---
-            "-c:v",
-            "h264_nvenc",
-            "-preset",
-            job.opts.nv_preset,
-            "-rc",
-            "vbr",
-            "-tune",
-            "hq",
-            # pix_fmt handled by format filter above
-            "-cq",
-            str(job.opts.crf),
-            "-b:v",
-            "0",
-        ]
+    return flags
 
+def build_encode_cmd(job: Job):
     cmd = [
         "ffmpeg",
         "-hide_banner",
@@ -303,45 +308,113 @@ def build_encode_cmd(job: Job):
         "error",
         "-xerror",
         "-y",
+        "-i",
+        str(job.src),
+        "-map",
+        "0:v:0",
     ]
+    
+    if job.encoder_options.encode_video:
+        vfilters = []
 
-    # Only use CUDA hwaccel if input is H.264 (AV1 on hardware will fail)
-    if job.opts.encoder == "h264_nvenc" and v.get("codec_name") == "h264":
+        v = next(s for s in job.meta["streams"] if s["codec_type"] == "video")
+        need_downscale = int(v.get("coded_height", 0)) > MAX_HEIGHT
+
+        # Only use the CUDA scaler if we also decoded on CUDA (i.e. input was H.264)
+        if job.opts.encoder == "h264_nvenc" and v.get("codec_name") == "h264":
+            if need_downscale:
+                vfilters.append(f"scale_cuda=-2:{MAX_HEIGHT}:format=yuv420p")
+            else:
+                vfilters.append("scale_cuda=format=yuv420p")
+        else:
+            # either CPU‐only path or non‐H.264 input → use normal scale
+            if need_downscale:
+                vfilters.append(f"scale=-2:{MAX_HEIGHT}")
+
+        vf = ",".join(vfilters) if vfilters else None
+
+        # -------- encoder-specific branch --------
+        if job.opts.encoder == "libx264":
+            video_flags = [
+                "-c:v",
+                "libx264",
+                "-preset",
+                job.opts.preset,
+                "-crf",
+                str(job.opts.crf),
+            ]
+        else:  # h264_nvenc
+            video_flags = [
+                # --- NVENC encode flags ---
+                "-c:v",
+                "h264_nvenc",
+                "-preset",
+                job.opts.nv_preset,
+                "-rc",
+                "vbr",
+                "-tune",
+                "hq",
+                # pix_fmt handled by format filter above
+                "-cq",
+                str(job.opts.crf),
+                "-b:v",
+                "0",
+            ]
+
+        # Only use CUDA hwaccel if input is H.264 (AV1 on hardware will fail)
+        if job.opts.encoder == "h264_nvenc" and v.get("codec_name") == "h264":
+            cmd.extend(
+                [
+                    "-hwaccel",
+                    "cuda",
+                    "-hwaccel_output_format",
+                    "cuda",
+                ]
+            )
+            
         cmd.extend(
             [
-                "-hwaccel",
-                "cuda",
-                "-hwaccel_output_format",
-                "cuda",
+                *video_flags,
+                "-profile:v",
+                "medium",
+                "-level",
+                "4.1",
+            ]
+            + (["-vf", vf] if vf else [])
+        )
+    else:
+        cmd.extend(
+            [
+                "-c:v",
+                "copy",
             ]
         )
 
-    tmp_out = job.dst.with_suffix(".tmp.mp4")
     cmd.extend(
         [
-            "-i",
-            str(job.src),
-            # ========== video ==========
-            "-map",
-            "0:v:0",
-            *video_flags,
-            "-profile:v",
-            "high",
-            "-level",
-            "4.1",
-        ]
-        + (["-vf", vf] if vf else [])
-        + [
-            # ========== audio ==========
-            # 1) include *all* input audio streams
             "-map",
             "0:a:0",
-            "-c:a:0",
-            "aac",
-            "-ac:0",
-            "2",
-            "-q:a:0",
-            "0.45",
+        ]
+    )
+    if job.encoder_options.encode_audio and False:
+        cmd.extend(
+            [  
+                "-c:a:0",
+                "aac",
+                "-ac:0",
+                "2",
+            ]
+        )
+    else:
+        cmd.extend(
+            [
+                "-c:a:0",
+                "copy",
+            ]
+        )
+
+    cmd.extend(
+        [
             "-map",
             "0:a:1?",
             "-c:a:1",
@@ -350,16 +423,14 @@ def build_encode_cmd(job: Job):
             "0:a:2?",
             "-c:a:2",
             "copy",
-            # ========== subtitles ==========
-            # take only text subtitles (SRT/ASS) and convert to MP4-native mov_text
-            "-map",
-            "0:s:m:codec_name:subrip?",
-            "-c:s",
-            "mov_text",
-            "-map",
-            "0:s:m:codec_name:ass?",
-            "-c:s",
-            "mov_text",
+        ]
+    )
+
+    cmd.extend(get_subtitle_flags(job))
+    
+    tmp_out = job.dst.with_stem(job.dst.stem + ".tmp")
+    cmd.extend(
+        [
             str(tmp_out),
         ]
     )
@@ -373,8 +444,11 @@ def process(job: Job):
       - remux or encode otherwise
       - on any ffmpeg error, log & return (i.e. skip the bad file)
     """
+
+    print(f"Job current working directory: { shlex.quote(os.getcwd())}")
+
     # 1) If we don't need to touch it, skip early
-    if job.action == "skip":
+    if job.action == Action.SKIP:
         log("✓", C.GRN, "Direct-play already supported", job.src)
         return
 
@@ -386,11 +460,10 @@ def process(job: Job):
         elif is_stub(job.dst):
             log("⚠", C.YEL, "Stub file detected; will overwrite", job.dst)
             job.dst.unlink()
-        else:
-            log("⚠", C.YEL, "Will overwrite non-compliant MP4 after encode", job.dst)
 
     # 3) Build the ffmpeg command
-    if job.action == "remux":
+    if job.action == Action.REMUX:
+        tmp_out = job.dst.with_stem(job.dst.stem + ".tmp")
         cmd = [
             "ffmpeg",
             "-hide_banner",
@@ -404,17 +477,17 @@ def process(job: Job):
             "copy",
             "-map_metadata",
             "0",
-            str(job.dst),
+            tmp_out,
         ]
-        tmp_out = None
     else:
         cmd, tmp_out = build_encode_cmd(job)
 
-    log("→", C.CYN, job.action.upper(), job.src)
+    log("→", C.CYN, str(job.action), job.src)
 
     # 4) Run ffmpeg, but don't let a non-zero exit kill the whole batch
     try:
-        subprocess.run(cmd, check=True)
+        print(f"FFmpeg command: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True, cwd=os.getcwd())
     except subprocess.CalledProcessError as e:
         # Log the failure and skip to the next file
         log("✗", C.RED, f"FFmpeg failed ({e.returncode}); skipping", job.src)
@@ -422,9 +495,14 @@ def process(job: Job):
 
     # 5) On success: atomic swap & optional delete
     if tmp_out and tmp_out.exists():
-        tmp_out.replace(job.dst)
+        if job.dst.exists():
+            bak_file = job.dst.with_stem(job.dst.stem + ".bak")
+            job.dst.replace(bak_file)
+            log("⚠", C.YEL, "Existing file will renamed to", bak_file)
 
-    if job.opts.delete_original and job.action == "encode" and job.src != job.dst:
+        tmp_out.rename(job.dst)
+
+    if job.opts.delete_original and job.action == Action.ENCODE and job.src != job.dst:
         job.src.unlink()
         log("✘", C.RED, "Deleted original", job.src)
 
@@ -434,13 +512,15 @@ def process(job: Job):
 
 def gather_files(roots, exts) -> List[Path]:
     files = []
+
     for root in roots:
         for p in Path(root).rglob("*"):
             # skip dot-files created by macOS (._foo, .DS_Store, etc.)
-            if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in exts:
+            if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in exts and not any(ignore in p.name for ignore in IGNORE_SUFFIXES):
+
                 files.append(p)
-    # sort so MP4s are handled after MKV/AVI in each directory
-    files.sort(key=lambda p: (p.parent, p.suffix.lower() == ".mp4", p.name))
+                return files # debug return early
+            
     return files
 
 
@@ -527,10 +607,12 @@ def main():
     print("Scanning …")
     files = gather_files(opts.roots, exts)
     print(f"Found {len(files)} candidate files.\n")
-
-    with ProcessPoolExecutor(max_workers=opts.workers) as exe:
+    
+    with ProcessPoolExecutor(max_workers=opts.workers) as executor:
         jobs = [Job(f, opts) for f in files]
-        exe.map(process, jobs)
+        results = executor.map(process, jobs)
+        for result in results:
+            print(result)
 
     print("\nDone.")
 
