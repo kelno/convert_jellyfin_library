@@ -1,3 +1,5 @@
+_Forked from ph33nx gist: https://gist.github.com/ph33nx/b0b7a0ff64bd3f7c8961675db22b4716_
+
 directplay.py
 =============
 
@@ -6,7 +8,7 @@ Chromecast, smart-TVs and desktop/mobile browsers — no server-side
 transcoding required.
 
 This script ensure the following:
-- Videos are moved to .mkv container.
+- Mkv container.
 - Video codec is h264.
 - Audio codec is AAC. (channel count and layour is kept)
 - Subtitles are converted to srt format.
@@ -35,12 +37,11 @@ Dependencies
 The current script directory will be added to path, so you can drop ffmpeg next to it if you want to use a different one.
 
 
-
 Quick start
 -----------
 
 ### Example:   
-`python3 directplay.py -j 2 --crf 18 --preset slow --delete-original true /mnt/media /video/new`
+`python3 directplay.py -j 2 --crf 18 --preset slow --delete-original /mnt/media /video/new`
 
 CLI flags
 ---------
