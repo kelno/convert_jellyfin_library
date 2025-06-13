@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-directplay.py
+encode.py
 =============
 
 Batch-optimise any video library so every file direct-plays on
@@ -25,6 +25,7 @@ Key features
 Dependencies
 ------------
 ffmpeg and ffprobe must be in your PATH.
+OR it will use the ones next to this file if any.
 
   Windows 10/11 : winget install Gyan.FFmpeg
   macOS (brew)  : brew install ffmpeg
@@ -74,16 +75,19 @@ from typing import List
 from enum import Enum
 import shlex
 
+
 # ------------------------- pretty logging ------------------------------ #
 class EncodeOptions:
     def __init__(self, encode_audio: bool, encode_video: bool):
         self.encode_audio = encode_audio
         self.encode_video = encode_video
 
+
 class Action(Enum):
     SKIP = "skip"
     REMUX = "remux"
     ENCODE = "encode"
+
 
 class C:
     RESET = "\033[0m"
@@ -104,6 +108,7 @@ IGNORE_SUFFIXES = {'.bak', '.tmp'}  # Files containing these will be skipped
 H264_LEVEL_THRESHOLD = 41  # High 4.1 is Chromecast safe
 MAX_HEIGHT = 1080  # Down-scale 4 K → 1080p to stay in 4.1
 AUDIO_CHANNELS = 2  # stereo AAC
+
 
 # ------------------------------------------------------------------------- #
 
@@ -162,23 +167,20 @@ def classify(job) -> tuple[Action, EncodeOptions]:
         log("⚠", C.YEL, "No video stream; skipping", job.src)
         return Action.SKIP, encode_options
 
-    direct_ok = (
-        job.src.suffix.lower() == ".mkv" and is_h264_ok(v) and has_aac_stereo(streams)
-    )
-    if direct_ok:
-        return Action.SKIP, encode_options
-
-    # Remux path: codecs OK but container wrong
-    if is_h264_ok(v) and has_aac_stereo(streams):
-        return Action.REMUX, encode_options
-
-    if not has_aac_stereo(streams):
+    if not has_aac_stereo(streams) and False:  # Debug for now
         encode_options.encode_audio = True
-    
+
     if not is_h264_ok(v):
         encode_options.encode_video = True
 
-    return Action.ENCODE, encode_options
+    if job.src.suffix.lower() == ".mkv" and not encode_options.encode_video and not encode_options.encode_audio:
+        return Action.SKIP, encode_options
+
+    if encode_options.encode_video or encode_options.encode_audio:
+        return Action.ENCODE, encode_options
+
+    # Remux path: codecs OK but container wrong
+    return Action.REMUX, encode_options
 
 
 # ----------------------------- job type ---------------------------------- #
@@ -233,8 +235,9 @@ class Job:
             else:
                 print(f"⚠️  Unreadable or non-video file, skipping {src}")
                 self.action = Action.SKIP
-                
+
         self.dst = src.with_suffix(".mkv") if self.action != Action.SKIP else None
+
 
 # --------------------------- worker logic -------------------------------- #
 
@@ -270,7 +273,7 @@ def is_stub(p: Path) -> bool:
 
 
 def get_subtitle_flags(job: Job) -> list:
-    """Returns FFmpeg flags based on actual subtitle streams"""
+    """Returns FFmpeg flags based existing subtitle streams"""
     flags = []
     subs = [s for s in job.meta["streams"] if s["codec_type"] == "subtitle"]
 
@@ -295,7 +298,20 @@ def get_subtitle_flags(job: Job) -> list:
 
     return flags
 
+
+def get_bitrate(channels: int) -> str:
+    """Returns appropriate AAC bitrate based on channel count"""
+    return {
+        1: "96k",  # Mono
+        2: "128k",  # Stereo
+        6: "384k",  # 5.1
+        8: "512k"  # 7.1
+    }.get(channels, f"{channels * 64}k")  # Default: 64k per channel
+
+
 def get_audio_flags(job: Job) -> list:
+    """Returns FFmpeg flags based existing audio streams"""
+
     flags = []
 
     flags.extend(
@@ -304,16 +320,31 @@ def get_audio_flags(job: Job) -> list:
             "0:a:0",
         ]
     )
-
     if job.encoder_options.encode_audio:
-        flags.extend(
-            [
-                "-c:a:0",
-                "aac",
-                "-ac:0",
-                "2",
-            ]
-        )
+        audio_stream = next((s for s in job.meta["streams"] if s["codec_type"] == "audio"), None)
+        if audio_stream:
+            channels = audio_stream.get("channels", 2)
+            channel_layout = audio_stream.get("channel_layout", "")
+
+            layout = {
+                1: "mono",
+                2: "stereo",
+                6: "5.1",
+                8: "7.1"
+            }.get(channels, "")
+
+            print(f"Encoding audio with {channels} channels & layout {channel_layout}")
+            flags.extend([
+                "-c:a:0", "aac",
+                "-b:a", get_bitrate(channels),  # Dynamic bitrate based on channels
+                "-ac:0", str(channels),
+                *(["-channel_layout", channel_layout] if channel_layout else []),
+                "-metadata:s:a:0", f"channels={channels}"
+            ])
+            # test with ffprobe -v error -show_entries stream=channel_layout,channels -of csv=p=0 <file>
+            # currently channels is borked
+        else:
+            print(f"Failed to get audio streams for {job.src}")
     else:
         flags.extend(
             [
@@ -337,8 +368,8 @@ def get_audio_flags(job: Job) -> list:
 
     return flags
 
-def build_encode_cmd(job: Job):
 
+def build_encode_cmd(job: Job):
     cmd = [
         "ffmpeg",
         "-hide_banner",
@@ -346,22 +377,7 @@ def build_encode_cmd(job: Job):
         "error",
         "-xerror",
         "-y",
-        "-i",
-        str(job.src),
     ]
-
-    srt_file = job.src.with_suffix(".srt")
-    if srt_file.exists():
-        print(f'Found subtitle {srt_file}')
-        cmd.extend([
-            "-i", str(srt_file),
-            "-map", "1:s",
-        ])
-
-    cmd.extend([
-        "-map",
-        "0:v:0",
-    ])
 
     if job.encoder_options.encode_video:
         vfilters = []
@@ -369,8 +385,9 @@ def build_encode_cmd(job: Job):
         v = next(s for s in job.meta["streams"] if s["codec_type"] == "video")
         need_downscale = int(v.get("coded_height", 0)) > MAX_HEIGHT
 
+        codec_name = v.get("codec_name")
         # Only use the CUDA scaler if we also decoded on CUDA (i.e. input was H.264)
-        if job.opts.encoder == "h264_nvenc" and v.get("codec_name") == "h264":
+        if job.opts.encoder == "h264_nvenc" and (codec_name == "h264" or codec_name == "hevc"):
             if need_downscale:
                 vfilters.append(f"scale_cuda=-2:{MAX_HEIGHT}:format=yuv420p")
             else:
@@ -392,7 +409,7 @@ def build_encode_cmd(job: Job):
                 "-crf",
                 str(job.opts.crf),
             ]
-        else:  # h264_nvenc
+        elif job.opts.encoder == "h264_nvenc":
             video_flags = [
                 # --- NVENC encode flags ---
                 "-c:v",
@@ -410,24 +427,42 @@ def build_encode_cmd(job: Job):
                 "0",
             ]
 
-        # Only use CUDA hwaccel if input is H.264 (AV1 on hardware will fail)
-        if job.opts.encoder == "h264_nvenc" and v.get("codec_name") == "h264":
-            cmd.extend(
-                [
-                    "-hwaccel",
-                    "cuda",
-                    "-hwaccel_output_format",
-                    "cuda",
-                ]
-            )
-            
+            print(f'CODEC {codec_name}')
+            # Only use CUDA hwaccel if input is H.264 (AV1 on hardware will fail)
+            if codec_name == "h264" or codec_name == "hevc":
+                cmd.extend(
+                    [
+                        "-hwaccel",
+                        "cuda",
+                        "-hwaccel_output_format",
+                        "cuda",
+                    ]
+                )
+        else:
+            log("✗", C.RED, f"Unknown encoder ({job.opts.encoder})", job.src)
+            exit(1)
+
+        cmd.extend([
+            "-i",
+            str(job.src),
+        ])
+
+        srt_file = job.src.with_suffix(".srt")
+        if srt_file.exists():
+            print(f'Found subtitle {srt_file}')
+            cmd.extend([
+                "-i", str(srt_file),
+                "-map", "1:s",
+            ])
+
         cmd.extend(
             [
+                "-map",
+                "0:v:0",
                 *video_flags,
-                "-profile:v",
-                "medium",
-                "-level",
-                "4.1",
+                # Let ffmpeg decide level
+                # "-level",
+                # "4.1",
             ]
             + (["-vf", vf] if vf else [])
         )
@@ -441,7 +476,7 @@ def build_encode_cmd(job: Job):
 
     cmd.extend(get_audio_flags(job))
     cmd.extend(get_subtitle_flags(job))
-    
+
     tmp_out = job.dst.with_stem(job.dst.stem + ".tmp")
     cmd.extend(
         [
@@ -459,7 +494,7 @@ def process(job: Job):
       - on any ffmpeg error, log & return (i.e. skip the bad file)
     """
 
-    print(f"Job current working directory: { shlex.quote(os.getcwd())}")
+    print(f"Job current working directory: {shlex.quote(os.getcwd())}")
 
     # 1) If we don't need to touch it, skip early
     if job.action == Action.SKIP:
@@ -496,7 +531,11 @@ def process(job: Job):
     else:
         cmd, tmp_out = build_encode_cmd(job)
 
-    log("→", C.CYN, str(job.action), job.src)
+    log_action = str(job.action)
+    if job.action == Action.ENCODE:
+        log_action += f" (video: {job.encoder_options.encode_video}, audio: {job.encoder_options.encode_audio})"
+
+    log("→", C.CYN, log_action, job.src)
 
     # 4) Run ffmpeg, but don't let a non-zero exit kill the whole batch
     try:
@@ -530,11 +569,10 @@ def gather_files(roots, exts) -> List[Path]:
     for root in roots:
         for p in Path(root).rglob("*"):
             # skip dot-files created by macOS (._foo, .DS_Store, etc.)
-            if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in exts and not any(ignore in p.name for ignore in IGNORE_SUFFIXES):
-
+            if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in exts and not any(
+                    ignore in p.name for ignore in IGNORE_SUFFIXES):
                 files.append(p)
-                return files # debug return early
-            
+
     return files
 
 
@@ -545,8 +583,8 @@ def main():
         "-j",
         "--workers",
         type=int,
-        default=os.cpu_count() or 1,
-        help="Parallel workers (default = all CPUs).",
+        default=1,
+        help="Parallel workers (default = 1).",
     )
     p.add_argument(
         "--crf",
@@ -566,6 +604,12 @@ def main():
         help="Remove source file after successful processing.",
     )
     p.add_argument(
+        "--gpu",
+        choices=("true", "false"),
+        default="false",
+        help="Use NVIDIA hvenc if possible.",
+    )
+    p.add_argument(
         "--exts",
         default=",".join(DEFAULT_EXTS),
         help="Comma-separated list of file extensions to consider.",
@@ -578,7 +622,7 @@ def main():
             "Windows": "winget install Gyan.FFmpeg",
             "Darwin": "brew install ffmpeg",
             "Linux": "sudo apt install ffmpeg   # Debian/Ubuntu\n"
-            "  sudo dnf install ffmpeg   # Fedora/RHEL",
+                     "  sudo dnf install ffmpeg   # Fedora/RHEL",
         }.get(platform.system(), "Install ffmpeg from your package manager")
 
         msg = textwrap.dedent(
@@ -595,7 +639,7 @@ def main():
 
     # -- Detect hardware encoder once --------------------------
     encoders = run(["ffmpeg", "-v", "quiet", "-encoders"])
-    opts.encoder = "h264_nvenc" if "h264_nvenc" in encoders else "libx264"
+    opts.encoder = "h264_nvenc" if (opts.gpu == True and "h264_nvenc" in encoders) else "libx264"
 
     # quick helper for preset mapping when NVENC is active
     def _nv_map(x):
@@ -621,7 +665,7 @@ def main():
     print("Scanning …")
     files = gather_files(opts.roots, exts)
     print(f"Found {len(files)} candidate files.\n")
-    
+
     with ProcessPoolExecutor(max_workers=opts.workers) as executor:
         jobs = [Job(f, opts) for f in files]
         results = executor.map(process, jobs)
