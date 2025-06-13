@@ -1,68 +1,5 @@
 #!/usr/bin/env python3
-"""
-encode.py
-=============
 
-Batch-optimise any video library so every file direct-plays on
-Chromecast, smart-TVs and desktop/mobile browsers — no server-side
-transcoding required.
-
-Key features
-------------
-• Smart decision tree – tries lightning-fast remux first; falls back
-  to H.264 re-encode only when codecs or resolution exceed safe limits.
-• Recursive scan – pass one or more root folders; sub-directories
-  handled automatically.
-• Parallel workers (-j / --workers) – use all CPU cores by default or
-  limit to keep the box responsive.
-• Quality knobs – --crf and --preset expose x264 controls; defaults
-  tuned for "Netflix-like" 1080 p quality.
-• Safe by default – outputs <name>.mkv in the same folder; originals
-  retained unless you add --delete-original true.
-• Idempotent – re-runs skip files already compliant; perfect for
-  nightly cron/systemd-timer jobs.
-
-Dependencies
-------------
-ffmpeg and ffprobe must be in your PATH.
-OR it will use the ones next to this file if any.
-
-  Windows 10/11 : winget install Gyan.FFmpeg
-  macOS (brew)  : brew install ffmpeg
-  Debian/Ubuntu : sudo apt install ffmpeg
-  Fedora/RHEL   : sudo dnf install -y ffmpeg ffprobe
-
-Python 3.8 or newer is required.
-
-Quick start
------------
-# dry-run, show what would happen
-python3 directplay.py /mnt/media
-
-# real conversion, two workers, better quality, delete sources after success
-python3 directplay.py -j 2 --crf 18 --preset slow \
-                      --delete-original true /mnt/media /video/new
-
-CLI flags
----------
-positional:
-  roots                One or more library root folders.
-
-optional:
-  -j, --workers N      Parallel encode workers (default = all CPUs)
-  --crf N              x264 Constant Rate Factor (quality slider, default 19)
-  --preset P           x264 preset: ultrafast … slow (default medium)
-  --delete-original    true|false  Remove source file on success (default false)
-  --exts .mkv,.mp4     Comma-separated list of file extensions to consider
-
-License
--------
-Apache-2.0 — use it, fork it, profit.
-
-Author
-------
-© 2025 ph33nx   https://github.com/ph33nx
-"""
 import platform, textwrap, sys
 import argparse
 import json
@@ -100,6 +37,17 @@ class C:
 def log(symbol: str, color: str, action: str, path: Path):
     print(f'{color}{symbol} {action}: "{path}"{C.RESET}')
 
+def get_script_dir():
+    """Returns the directory containing the current script"""
+    return Path(__file__).parent.resolve()
+
+
+def setup_ffmpeg_path():
+    """Prepend script directory to PATH"""
+    script_dir = str(get_script_dir())
+    os.environ["PATH"] = script_dir + os.pathsep + os.environ["PATH"]
+    print(f"Added script directory to PATH: {script_dir}")
+
 
 # ---------------------------- constants ---------------------------------- #
 
@@ -107,7 +55,6 @@ DEFAULT_EXTS = {".mkv", ".mp4"}
 IGNORE_SUFFIXES = {'.bak', '.tmp'}  # Files containing these will be skipped
 H264_LEVEL_THRESHOLD = 41  # High 4.1 is Chromecast safe
 MAX_HEIGHT = 1080  # Down-scale 4 K → 1080p to stay in 4.1
-AUDIO_CHANNELS = 2  # stereo AAC
 
 
 # ------------------------------------------------------------------------- #
@@ -167,10 +114,10 @@ def classify(job) -> tuple[Action, EncodeOptions]:
         log("⚠", C.YEL, "No video stream; skipping", job.src)
         return Action.SKIP, encode_options
 
-    if not has_aac_stereo(streams) and False:  # Debug for now
+    if job.opts.skipaudio is False and not has_aac_stereo(streams):
         encode_options.encode_audio = True
 
-    if not is_h264_ok(v):
+    if job.opts.skipvideo is False and not is_h264_ok(v):
         encode_options.encode_video = True
 
     if job.src.suffix.lower() == ".mkv" and not encode_options.encode_video and not encode_options.encode_audio:
@@ -308,6 +255,11 @@ def get_bitrate(channels: int) -> str:
         8: "512k"  # 7.1
     }.get(channels, f"{channels * 64}k")  # Default: 64k per channel
 
+def convert_layout_for_libfdk_aac(layout) -> str:
+
+    return {
+        "5.1(side)": "5.1",
+    }.get(layout, layout)
 
 def get_audio_flags(job: Job) -> list:
     """Returns FFmpeg flags based existing audio streams"""
@@ -333,9 +285,13 @@ def get_audio_flags(job: Job) -> list:
                 8: "7.1"
             }.get(channels, "")
 
+
+            if channel_layout == "5.1(side)":
+                channel_layout = "5.1"
+
             print(f"Encoding audio with {channels} channels & layout {channel_layout}")
             flags.extend([
-                "-c:a:0", "aac",
+                "-c:a:0", "libfdk_aac",
                 "-b:a", get_bitrate(channels),  # Dynamic bitrate based on channels
                 "-ac:0", str(channels),
                 *(["-channel_layout", channel_layout] if channel_layout else []),
@@ -379,13 +335,42 @@ def build_encode_cmd(job: Job):
         "-y",
     ]
 
+    v = next(s for s in job.meta["streams"] if s["codec_type"] == "video")
+    codec_name = v.get("codec_name")
+
+    print(f'Found video codec {codec_name}')
+    # Only use CUDA hwaccel if input is H.264 (AV1 on hardware will fail)
+    if job.opts.encoder == "h264_nvenc":
+        if codec_name == "h264" or codec_name == "hevc":
+            cmd.extend(
+                [
+                    "-hwaccel",
+                    "cuda",
+                    "-hwaccel_output_format",
+                    "cuda",
+                ]
+            )
+
+    cmd.extend([
+        "-i",
+        str(job.src),
+        "-map",
+        "0:v:0",
+    ])
+
+    srt_file = job.src.with_suffix(".srt")
+    if srt_file.exists():
+        print(f'Found subtitle {srt_file}')
+        cmd.extend([
+            "-i", str(srt_file),
+            "-map", "1:s",
+        ])
+
     if job.encoder_options.encode_video:
         vfilters = []
 
-        v = next(s for s in job.meta["streams"] if s["codec_type"] == "video")
         need_downscale = int(v.get("coded_height", 0)) > MAX_HEIGHT
 
-        codec_name = v.get("codec_name")
         # Only use the CUDA scaler if we also decoded on CUDA (i.e. input was H.264)
         if job.opts.encoder == "h264_nvenc" and (codec_name == "h264" or codec_name == "hevc"):
             if need_downscale:
@@ -427,38 +412,12 @@ def build_encode_cmd(job: Job):
                 "0",
             ]
 
-            print(f'CODEC {codec_name}')
-            # Only use CUDA hwaccel if input is H.264 (AV1 on hardware will fail)
-            if codec_name == "h264" or codec_name == "hevc":
-                cmd.extend(
-                    [
-                        "-hwaccel",
-                        "cuda",
-                        "-hwaccel_output_format",
-                        "cuda",
-                    ]
-                )
         else:
             log("✗", C.RED, f"Unknown encoder ({job.opts.encoder})", job.src)
             exit(1)
 
-        cmd.extend([
-            "-i",
-            str(job.src),
-        ])
-
-        srt_file = job.src.with_suffix(".srt")
-        if srt_file.exists():
-            print(f'Found subtitle {srt_file}')
-            cmd.extend([
-                "-i", str(srt_file),
-                "-map", "1:s",
-            ])
-
         cmd.extend(
             [
-                "-map",
-                "0:v:0",
                 *video_flags,
                 # Let ffmpeg decide level
                 # "-level",
@@ -563,7 +522,7 @@ def process(job: Job):
 # ----------------------------- main -------------------------------------- #
 
 
-def gather_files(roots, exts) -> List[Path]:
+def gather_files(roots, exts, limit: int) -> List[Path]:
     files = []
 
     for root in roots:
@@ -572,42 +531,68 @@ def gather_files(roots, exts) -> List[Path]:
             if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in exts and not any(
                     ignore in p.name for ignore in IGNORE_SUFFIXES):
                 files.append(p)
+                if limit is not 0 and len(files) >= limit:
+                    return files
 
     return files
 
 
 def main():
-    p = argparse.ArgumentParser(description="Pre-encode / remux videos for Chromecast.")
+    setup_ffmpeg_path()
+    p = argparse.ArgumentParser(description="Pre-encode / remux videos for Chromecast.",
+                                formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("roots", nargs="+", help="Root directories to scan.")
     p.add_argument(
         "-j",
         "--workers",
         type=int,
         default=1,
-        help="Parallel workers (default = 1).",
+        help="Parallel workers.",
+    )
+    p.add_argument(
+        "--limit",
+        "-l",
+        type=int,
+        default=0,
+        help="Max videos to process before stopping. 0 means means unlimited.",
     )
     p.add_argument(
         "--crf",
         type=int,
         default=19,
-        help="x264 Constant Rate Factor (lower = higher quality, default 19).",
+        help="x264 Constant Rate Factor (lower = higher quality).",
     )
     p.add_argument(
-        "--preset",
-        default="medium",
-        help="x264 preset: ultrafast…slow (default medium).",
-    )
-    p.add_argument(
+        "-d",
         "--delete-original",
-        choices=("true", "false"),
-        default="false",
+        action='store_true',
+        default=False,
         help="Remove source file after successful processing.",
     )
     p.add_argument(
-        "--gpu",
+        "--hvenc",
         choices=("true", "false"),
         default="false",
         help="Use NVIDIA hvenc if possible.",
+    )
+    p.add_argument(
+        "--hvenc-preset",
+        default="medium",
+        help="hvenc preset: ultrafast…slow.",
+    )
+    p.add_argument(
+        "--skip-video",
+        "-sv",
+        action='store_true',
+        default=False,
+        help="Never transcode video.",
+    )
+    p.add_argument(
+        "--skip-audio",
+        "--sa",
+        action='store_true',
+        default=False,
+        help="Never transcode video.",
     )
     p.add_argument(
         "--exts",
@@ -639,7 +624,7 @@ def main():
 
     # -- Detect hardware encoder once --------------------------
     encoders = run(["ffmpeg", "-v", "quiet", "-encoders"])
-    opts.encoder = "h264_nvenc" if (opts.gpu == True and "h264_nvenc" in encoders) else "libx264"
+    opts.encoder = "h264_nvenc" if (opts.gpu is True and "h264_nvenc" in encoders) else "libx264"
 
     # quick helper for preset mapping when NVENC is active
     def _nv_map(x):
@@ -654,16 +639,20 @@ def main():
             "slower": "p6",
             "veryslow": "p7",
         }
-        return map_.get(x, "p4")
+        if x not in map_:
+            raise ValueError(
+                f"Unsupported NVENC preset: '{x}'. "
+                f"Valid options are: {', '.join(map_.keys())}"
+            )
+        return map_[x]  # Explicit dict access now safe
 
     # Add the NVENC preset mapping to the options
     opts.nv_preset = _nv_map(opts.preset)
 
-    opts.delete_original = opts.delete_original.lower() == "true"
     exts = {e if e.startswith(".") else f".{e}" for e in opts.exts.split(",")}
 
     print("Scanning …")
-    files = gather_files(opts.roots, exts)
+    files = gather_files(opts.roots, exts, opts.limit)
     print(f"Found {len(files)} candidate files.\n")
 
     with ProcessPoolExecutor(max_workers=opts.workers) as executor:
