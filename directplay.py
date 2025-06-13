@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 
-import platform, textwrap, sys
 import argparse
 import json
 import os
+import platform
+import shlex
 import shutil
 import subprocess
+import sys
+import textwrap
 from concurrent.futures import ProcessPoolExecutor
+from enum import Enum
 from pathlib import Path
 from typing import List
-from enum import Enum
-import shlex
 
+GO BACK TO MP4;
 
 # ------------------------- pretty logging ------------------------------ #
 class EncodeOptions:
@@ -37,6 +40,7 @@ class C:
 def log(symbol: str, color: str, action: str, path: Path):
     print(f'{color}{symbol} {action}: "{path}"{C.RESET}')
 
+
 def get_script_dir():
     """Returns the directory containing the current script"""
     return Path(__file__).parent.resolve()
@@ -61,12 +65,12 @@ MAX_HEIGHT = 1080  # Down-scale 4 K → 1080p to stay in 4.1
 
 
 def run(cmd: List[str]) -> str:
-    "Run command, return stdout text, raise on error."
+    """Run command, return stdout text, raise on error."""
     return subprocess.check_output(cmd, text=True)
 
 
 def ffprobe(path: Path) -> dict:
-    "Return ffprobe metadata for video & audio streams."
+    """Return ffprobe metadata for video & audio streams."""
     return json.loads(
         run(
             [
@@ -88,9 +92,9 @@ def ffprobe(path: Path) -> dict:
 
 def is_h264_ok(v: dict) -> bool:
     return (
-        v["codec_name"] == "h264"
-        and float(v.get("level", H264_LEVEL_THRESHOLD)) <= H264_LEVEL_THRESHOLD
-        and int(v.get("coded_height", MAX_HEIGHT)) <= MAX_HEIGHT
+            v["codec_name"] == "h264"
+            and float(v.get("level", H264_LEVEL_THRESHOLD)) <= H264_LEVEL_THRESHOLD
+            and int(v.get("coded_height", MAX_HEIGHT)) <= MAX_HEIGHT
     )
 
 
@@ -255,10 +259,11 @@ def get_bitrate(channels: int) -> str:
         8: "512k"  # 7.1
     }.get(channels, f"{channels * 64}k")  # Default: 64k per channel
 
-def convert_layout_for_libfdk_aac(layout) -> str:
 
+def convert_layout_for_libfdk_aac(layout) -> str:
     return {
         "5.1(side)": "5.1",
+        # ... Will need more for other layouts
     }.get(layout, layout)
 
 def get_audio_flags(job: Job) -> list:
@@ -277,17 +282,7 @@ def get_audio_flags(job: Job) -> list:
         if audio_stream:
             channels = audio_stream.get("channels", 2)
             channel_layout = audio_stream.get("channel_layout", "")
-
-            layout = {
-                1: "mono",
-                2: "stereo",
-                6: "5.1",
-                8: "7.1"
-            }.get(channels, "")
-
-
-            if channel_layout == "5.1(side)":
-                channel_layout = "5.1"
+            channel_layout = convert_layout_for_libfdk_aac(channel_layout)
 
             print(f"Encoding audio with {channels} channels & layout {channel_layout}")
             flags.extend([
