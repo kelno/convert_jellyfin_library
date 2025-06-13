@@ -8,25 +8,21 @@ Chromecast, smart-TVs and desktop/mobile browsers — no server-side
 transcoding required.
 
 This script ensure the following:
-- Mkv container.
-- Video codec is h264.
-- Audio codec is AAC. (channel count and layour is kept)
-- Subtitles are converted to srt format.
-- Subtitles files matching <video_name.srt> are also automatically added to the container.
+- Video is using an mkv container
+- Video codec is h264
+- Audio codec is AAC (channel count and layour is kept)
+- Subtitles are converted to srt format
+- Subtitles files matching <video_name.srt> are also automatically added to the container (But not removed yet!)
 
 Key features
 ------------
-• Smart decision tree – tries lightning-fast remux first; falls back
-  to H.264 re-encode only when codecs or resolution exceed safe limits.
-• Recursive scan – pass one or more root folders; sub-directories
-  handled automatically.
-• Parallel workers (-j / --workers) – use 1 CPU cores by default.
-• Quality knobs – --crf and --preset expose x264 controls; defaults
-  tuned for "Netflix-like" 1080 p quality.
-• Safe by default – outputs <name>.mkv in the same folder; originals
-  retained as `<name>.bak.mkv` unless you specify --delete-original.
-• Idempotent – re-runs skip files already compliant; perfect for
-  nightly cron/systemd-timer jobs.
+
+- **Smart decision tree** – tries lightning-fast remux first; falls back to H.264 re-encode only when codecs or resolution exceed safe limits.
+- **Recursive scan** – pass one or more root folders; sub-directories handled automatically.
+- **Parallel workers** (-j / --workers) – use 1 CPU cores by default.
+- **Quality knobs** – --crf and --preset expose x264 controls; defaults tuned for "Netflix-like" 1080 p quality.
+- **Safe by default** – outputs <name>.mkv in the same folder; originals retained as `<name>.bak.mkv` unless you specify --delete-original.
+- **Idempotent** – re-runs skip files already compliant; perfect for nightly cron/systemd-timer jobs.
 
 Dependencies
 ------------
@@ -43,6 +39,8 @@ Quick start
 ### Example:   
 `python3 directplay.py -j 2 --crf 18 --preset slow --delete-original /mnt/media /video/new`
 
+/!\ Currently, existing .srt files are added to the .mkv but not removed. They might be re added on subsequent runs!
+ 
 CLI flags
 ---------
 *Run this script with '-h' for up to date arguments.*
