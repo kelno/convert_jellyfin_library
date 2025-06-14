@@ -7,7 +7,10 @@ Batch-optimise my video library so every file direct-plays on my devices, and ho
 
 This script ensure the following:
 - Video is using a webm container
-- Video codec is AV1 (controlled by command line)
+- Video is:
+  - Codec AV1 (controlled by command line)
+  - Max height 1080
+  - Max level 4.1
 - Audio codec is opus in stereo
 - Subtitles are converted to webVTT format
 - Subtitles files matching <video_name.srt> are also automatically added to the container (but not removed as of writing)
@@ -15,7 +18,7 @@ This script ensure the following:
 Key features
 ------------
 
-- **Smart decision tree** – tries lightning-fast remux first; falls back to H.264 re-encode only when codecs or resolution exceed safe limits.
+- **Smart decision tree** – tries lightning-fast remux first; falls back to re-encode only when needed.
 - **Recursive scan** – pass one or more root folders; sub-directories handled automatically.
 - **Parallel workers** (-j / --workers) – use 1 CPU cores by default.
 - **Quality knobs** – --crf and --preset expose x264 controls; defaults tuned for "Netflix-like" 1080 p quality.
@@ -34,7 +37,7 @@ Quick start
 -----------
 
 ### Example:   
-`python3 directplay.py -j 2 --delete-original /mnt/media /video/new`
+`python directplay.py -j 2 --delete-original /mnt/media /video/new`
 
 /!\ Currently, existing .srt files are added to the container but not removed. They might be re added on subsequent runs!
  

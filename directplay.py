@@ -12,7 +12,6 @@ import textwrap
 from concurrent.futures import ProcessPoolExecutor
 from enum import Enum
 from pathlib import Path
-from typing import List
 from typing import Dict, List
 
 # ------------------------- pretty logging ------------------------------ #
@@ -93,7 +92,7 @@ class DefaultEncoderConfigManager:
         "libx264": EncoderConfig(
             preset="medium",
             codec="h264",
-            additional_options=["-crf", "19", "-pix_fmt", "yuv420p"] # Enforce 8bit format for firefox compatibility
+            additional_options=["-crf", "19", "-pix_fmt", "yuv420p"]  # Enforce 8bit format for firefox compatibility
         ),
         "h264_nvenc": EncoderConfig(
             preset="p4",
@@ -134,8 +133,7 @@ class DefaultEncoderConfigManager:
             raise ValueError(f"Encoder '{encoder_name}' not found in the configuration")
         
         return DefaultEncoderConfigManager.ENCODER_CONFIGS[encoder_name].codec
-    
-    
+
     @staticmethod
     def get_supported_encoders() -> List[str]:
         return list(DefaultEncoderConfigManager.ENCODER_CONFIGS.keys())
@@ -351,6 +349,7 @@ def get_bitrate(channels: int) -> str:
         8: "512k"  # 7.1
     }.get(channels, f"{channels * 64}k")  # Default: 64k per channel
 
+
 def get_audio_flags(job: Job) -> list:
     """Returns FFmpeg flags based existing audio streams"""
 
@@ -372,10 +371,11 @@ def get_audio_flags(job: Job) -> list:
                 "-b:a", "192k",
                 "-ac", "2",
             ])
-            # To test channel layout: with ffprobe -v error -show_entries stream=channel_layout,channels -of csv=p=0 <file>
+            # Test channel layout: with ffprobe -v error -show_entries stream=channel_layout,channels -of csv=p=0 <file>
         else:
             print(f"Failed to get audio streams for {job.src}")
 
+         
         # just copy other streams if any
         flags.extend(
             [
@@ -444,7 +444,7 @@ def build_encode_cmd(job: Job):
         else:
             # either CPU‐only path or non‐H.264 input → use normal scale
             if need_downscale:
-                vfilters.append(f"scale=-2:{MAX_HEIGHT}")
+                vfilters.append(f'scale=-2:{MAX_HEIGHT}')
 
         vf = ",".join(vfilters) if vfilters else None
 
@@ -522,8 +522,8 @@ def process(job: Job):
         log("⚠", C.YEL, "Stub file detected; will overwrite", job.dst)
         job.dst.unlink()
 
-    cmd: list[str] = [ ]
-    tmp_out: Path|None = None
+    cmd: list[str] = []
+    tmp_out: Path | None = None
     
     # 3) Build the ffmpeg command
     if job.action == Action.ENCODE:
@@ -698,6 +698,7 @@ def main():
     with ProcessPoolExecutor(max_workers=opts.workers) as executor:
         jobs = [Job(f, opts) for f in files]
         results = executor.map(process, jobs)
+        # print errors if any
         for result in results:
             print(result)
 
