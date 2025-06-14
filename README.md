@@ -3,15 +3,13 @@ _Forked from ph33nx gist: https://gist.github.com/ph33nx/b0b7a0ff64bd3f7c8961675
 directplay.py
 =============
 
-Batch-optimise any video library so every file direct-plays on
-Chromecast, smart-TVs and desktop/mobile browsers — no server-side
-transcoding required.
+Batch-optimise my video library so every file direct-plays on my devices, and hopefully most others as well.
 
 This script ensure the following:
 - Video is using an mkv container
-- Video codec is h264
-- Audio codec is AAC (channel count and layour is kept)
-- Subtitles are converted to srt format
+- Video codec is AV1
+- Audio codec is opus in stereo.
+- Subtitles are converted to webVTT format
 - Subtitles files matching <video_name.srt> are also automatically added to the container (But not removed yet!)
 
 Key features

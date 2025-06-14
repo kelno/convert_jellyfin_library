@@ -344,37 +344,6 @@ def get_bitrate(channels: int) -> str:
         8: "512k"  # 7.1
     }.get(channels, f"{channels * 64}k")  # Default: 64k per channel
 
-
-def translate_channel_layout(layout :str, target_encoder: str) -> str:
-    layout_translations = {
-        "libopus": {
-            "stereo": "stereo",
-            "mono": "mono",
-            "5.1(side)": "5.1",
-            "5.1": "5.1"
-            # Add more encoders and their layout translations as needed
-        },
-        "libfdk_aac": {
-            "stereo": "stereo",
-            "mono": "mono",
-            "5.1(side)": "5.1"
-            # Add more encoders and their layout translations as needed
-            # libfdk_aac Supported channel layouts in my ffmpeg currently: mono stereo 3.0 4.0 5.0 5.1 6.1(back) 7.1(wide) 7.1 5.1.2(back)
-        },
-    }
-
-    if target_encoder not in layout_translations:
-        print(f"Target encoder '{target_encoder}' not found for channel layout translation. Passing existing layout as is.")
-        return layout
-
-    translations = layout_translations[target_encoder]
-    if layout not in translations:
-        print(f"Channel Layout '{layout}' has no known translation for encoder '{target_encoder}'. Passing existing layout as is.")
-        return layout
-    
-    return translations[layout]
-
-
 def get_audio_flags(job: Job) -> list:
     """Returns FFmpeg flags based existing audio streams"""
 
@@ -391,20 +360,12 @@ def get_audio_flags(job: Job) -> list:
         if audio_stream:
             # always downmix to stereo
 
-            #channels = audio_stream.get("channels", 2)
-            #channel_layout = audio_stream.get("channel_layout", "")
-            #channel_layout = translate_channel_layout(channel_layout, TARGET_AUDIO_ENCODER)
-
-            #print(f"Encoding audio with {channels} channels & layout {channel_layout}")
             flags.extend([
                 "-c:a", TARGET_AUDIO_ENCODER,
                 "-b:a", "192k",
-                # get_bitrate(channels),  # Dynamic bitrate based on channels
-                # *(["-channel_layout", channel_layout] if channel_layout else []),
                 "-ac", "2",
             ])
             # test with ffprobe -v error -show_entries stream=channel_layout,channels -of csv=p=0 <file>
-            # currently channels is borked
         else:
             print(f"Failed to get audio streams for {job.src}")
     else:
