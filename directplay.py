@@ -17,6 +17,7 @@ from typing import Dict, List
 
 # ------------------------- pretty logging ------------------------------ #
 
+
 class Action(Enum):
     SKIP = "skip"
     ENCODE = "encode"
@@ -38,6 +39,7 @@ class C:
     CYN = "\033[36m"
     YEL = "\033[33m"
     RED = "\033[31m"
+
 
 def log(symbol: str, color: str, action: str, path: Path):
     print(f'{color}{symbol} {action}: "{path}"{C.RESET}')
@@ -132,6 +134,11 @@ class DefaultEncoderConfigManager:
             raise ValueError(f"Encoder '{encoder_name}' not found in the configuration")
         
         return DefaultEncoderConfigManager.ENCODER_CONFIGS[encoder_name].codec
+    
+    
+    @staticmethod
+    def get_supported_encoders() -> List[str]:
+        return list(DefaultEncoderConfigManager.ENCODER_CONFIGS.keys())
 
 
 def run(cmd: List[str]) -> str:
@@ -365,9 +372,23 @@ def get_audio_flags(job: Job) -> list:
                 "-b:a", "192k",
                 "-ac", "2",
             ])
-            # test with ffprobe -v error -show_entries stream=channel_layout,channels -of csv=p=0 <file>
+            # To test channel layout: with ffprobe -v error -show_entries stream=channel_layout,channels -of csv=p=0 <file>
         else:
             print(f"Failed to get audio streams for {job.src}")
+
+        # just copy other streams if any
+        flags.extend(
+            [
+                "-map",
+                "0:a:1?",
+                "-c:a:1",
+                "copy",
+                "-map",
+                "0:a:2?",
+                "-c:a:2",
+                "copy",
+            ]
+        )
     else:
         flags.extend(
             [
@@ -375,19 +396,6 @@ def get_audio_flags(job: Job) -> list:
                 "copy",
             ]
         )
-
-    flags.extend(
-        [
-            "-map",
-            "0:a:1?",
-            "-c:a:1",
-            "copy",
-            "-map",
-            "0:a:2?",
-            "-c:a:2",
-            "copy",
-        ]
-    )
 
     return flags
 
@@ -607,7 +615,7 @@ def main():
         "--encoder",
         type=str,
         default=DEFAULT_VIDEO_ENCODER,
-        help="Specify which encoder to use.",
+        help=f"Specify which encoder to use. Supported encoders are: {DefaultEncoderConfigManager.get_supported_encoders()}",
     )
     p.add_argument(
         "--preset",
@@ -656,7 +664,7 @@ def main():
     opts = p.parse_args()
 
     # -- Make sure ffmpeg exists BEFORE calling it -------------
-    if not shutil.which("ffmpeg"):
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         os_hint = {
             "Windows": "winget install Gyan.FFmpeg",
             "Darwin": "brew install ffmpeg",

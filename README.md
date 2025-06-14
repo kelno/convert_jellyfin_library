@@ -6,11 +6,11 @@ directplay.py
 Batch-optimise my video library so every file direct-plays on my devices, and hopefully most others as well.
 
 This script ensure the following:
-- Video is using an mkv container
-- Video codec is AV1
-- Audio codec is opus in stereo.
+- Video is using a webm container
+- Video codec is AV1 (controlled by command line)
+- Audio codec is opus in stereo
 - Subtitles are converted to webVTT format
-- Subtitles files matching <video_name.srt> are also automatically added to the container (But not removed yet!)
+- Subtitles files matching <video_name.srt> are also automatically added to the container (but not removed as of writing)
 
 Key features
 ------------
@@ -19,25 +19,24 @@ Key features
 - **Recursive scan** – pass one or more root folders; sub-directories handled automatically.
 - **Parallel workers** (-j / --workers) – use 1 CPU cores by default.
 - **Quality knobs** – --crf and --preset expose x264 controls; defaults tuned for "Netflix-like" 1080 p quality.
-- **Safe by default** – outputs <name>.mkv in the same folder; originals retained as `<name>.bak.mkv` unless you specify --delete-original.
+- **Safe by default** – outputs <name>.webm in the same folder; originals retained as `<name>.bak.webm` unless you specify --delete-original.
 - **Idempotent** – re-runs skip files already compliant; perfect for nightly cron/systemd-timer jobs.
 
 Dependencies
 ------------
 - Python 3.8 or newer is required.
 - ffmpeg and ffprobe must be in your PATH. 
-- ffmpeg needs to be built with libfdk_aac. (See https://github.com/m-ab-s/media-autobuild_suite to build it yourself)
 
-The current script directory will be added to path, so you can drop ffmpeg next to it if you want to use a different one.
+The current script directory will be added to path, so you can drop ffmpeg next to it if you want to use a specific one.
 
 
 Quick start
 -----------
 
 ### Example:   
-`python3 directplay.py -j 2 --crf 18 --preset slow --delete-original /mnt/media /video/new`
+`python3 directplay.py -j 2 --delete-original /mnt/media /video/new`
 
-/!\ Currently, existing .srt files are added to the .mkv but not removed. They might be re added on subsequent runs!
+/!\ Currently, existing .srt files are added to the container but not removed. They might be re added on subsequent runs!
  
 CLI flags
 ---------
@@ -55,13 +54,14 @@ options:
                         Max videos to process before stopping. 0 means means unlimited. (default: 0)
   -d, --delete-original
                         Remove source file after successful processing. (default: False)
-  --encoder ENCODER     Specify which encoder to use. (default: av1_nvenc)
+  --encoder ENCODER     Specify which encoder to use. Supported encoders are: ['libx264', 'h264_nvenc', 'av1_nvenc'] (default:
+                        av1_nvenc)
   --preset PRESET       Presets, has to match the encoder. (ex for xh264: ultrafast…slow) (default: None)
   --skip-video, -sv     Never transcode video. (default: False)
   --skip-subtitles, -ss
                         Never transcode subtitles. (default: False)
   --skip-audio, --sa    Never transcode video. (default: False)
-  --exts EXTS           Comma-separated list of file extensions to consider. (default: .mp4,.mkv,.webm)
+  --exts EXTS           Comma-separated list of file extensions to consider. (default: .webm,.mp4,.mkv)
   --debug               Create a .txt file next to destination with ffmpeg command. (default: False)
   --sample SAMPLE       Create a segment sample of given length in second. (default: 0)
 ```
