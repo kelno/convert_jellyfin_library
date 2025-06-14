@@ -74,48 +74,53 @@ TARGET_CONTAINER: str = '.webm'
 DEFAULT_VIDEO_ENCODER: str = "av1_nvenc"
 TARGET_SUBTITLE_FORMAT: str = 'webvtt'
 TARGET_AUDIO_ENCODER: str = 'libopus'
-TARGET_AUDIO_CODEC: str = 'opus'
 
 # ------------------------------------------------------------------------- #
 
 
 class EncoderConfig:
-    def __init__(self, preset: str, codec: str, additional_options: List[str]):
-        self.preset = preset
-        self.codec = codec
-        self.additional_options = additional_options
+    def __init__(self, codec_name: str, options: List[str]):
+        self.codec_name = codec_name
+        self.options = options
 
 
 class DefaultEncoderConfigManager:
     # Static data array
     ENCODER_CONFIGS: Dict[str, EncoderConfig] = {
         "libx264": EncoderConfig(
-            preset="medium",
-            codec="h264",
-            additional_options=["-crf", "19", "-pix_fmt", "yuv420p"]  # Enforce 8bit format for firefox compatibility
+            codec_name="h264",
+            options=[
+                "-preset", "medium",
+                "-crf", "19", 
+                "-pix_fmt", "yuv420p"  # Enforce 8bit format for firefox compatibility
+            ] 
         ),
         "h264_nvenc": EncoderConfig(
-            preset="p4",
-            codec="hevc",  # or h264?
-            additional_options=[ 
+            codec_name="hevc",  # or h264?
+            options=[ 
+                "-preset", "p4",
                 "-rc", "vbr",
                 "-cq", "0"
-                "-tune",
-                "hq",
+                "-tune", "hq",
                 # color format is handled in build_encode_cmd for now for nvenc
             ]
         ),
         #  ffmpeg -h encoder=av1_nvenc
         "av1_nvenc": EncoderConfig(
-            preset="p4",
-            codec="av1",
-            additional_options=[
+            codec_name="av1",
+            options=[
+                "-preset", "p4",
                 "-rc", "vbr",
                 "-cq", "0",
-                "-tune", 
-                "hq",
+                "-tune", "hq",
                 "-highbitdepth",
                 "true"
+            ]
+        ),
+        "libopus": EncoderConfig(
+            codec_name="opus",
+            options=[
+                "-b:a", "192k" # assuming stereo
             ]
         ),
     }
@@ -132,7 +137,7 @@ class DefaultEncoderConfigManager:
         if encoder_name not in DefaultEncoderConfigManager.ENCODER_CONFIGS:
             raise ValueError(f"Encoder '{encoder_name}' not found in the configuration")
         
-        return DefaultEncoderConfigManager.ENCODER_CONFIGS[encoder_name].codec
+        return DefaultEncoderConfigManager.ENCODER_CONFIGS[encoder_name].codec_name
 
     @staticmethod
     def get_supported_encoders() -> List[str]:
@@ -214,7 +219,7 @@ class StreamValidator:
     @staticmethod
     def is_audio_ok(streams: List[dict]) -> bool:
         for s in streams:
-            if s["codec_type"] == "audio" and s["codec_name"] == TARGET_AUDIO_CODEC:
+            if s["codec_type"] == "audio" and s["codec_name"] == DefaultEncoderConfigManager.get_codec_name(TARGET_AUDIO_ENCODER):
                 return True
             
         return False
@@ -333,7 +338,7 @@ def get_subtitle_flags(job: Job) -> list:
             "-map",
             "0:s?",
             "-c:s",
-            TARGET_SUBTITLE_FORMAT,
+            "copy",
             "-ignore_unknown"
         ])
 
@@ -364,13 +369,16 @@ def get_audio_flags(job: Job) -> list:
     if job.encode_options.audio:
         audio_stream = next((s for s in job.meta["streams"] if s["codec_type"] == "audio"), None)
         if audio_stream:
+            
+            encoder_default_config = DefaultEncoderConfigManager.get(job.opts.encoder)
+
             # always downmix to stereo
 
             flags.extend([
                 "-c:a", TARGET_AUDIO_ENCODER,
-                "-b:a", "192k",
                 "-ac", "2",
             ])
+            flags.extend(encoder_default_config.options)
             # Test channel layout: with ffprobe -v error -show_entries stream=channel_layout,channels -of csv=p=0 <file>
         else:
             print(f"Failed to get audio streams for {job.src}")
@@ -450,16 +458,11 @@ def build_encode_cmd(job: Job):
 
         encoder_default_config = DefaultEncoderConfigManager.get(job.opts.encoder)
 
-        cmd.extend([
-            "-c:v",
-            job.opts.encoder,
-            "-preset",
-            job.opts.preset or encoder_default_config.preset,
-        ])
-
         cmd.extend(
             [
-                *encoder_default_config.additional_options,
+                "-c:v",
+                job.opts.encoder,
+                *encoder_default_config.options,
                 # Let ffmpeg decide level
                 # "-level",
                 # "4.1",
