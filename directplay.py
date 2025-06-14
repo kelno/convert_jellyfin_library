@@ -24,7 +24,6 @@ class EncodeOptions:
 
 class Action(Enum):
     SKIP = "skip"
-    REMUX = "remux"
     ENCODE = "encode"
 
 
@@ -56,11 +55,13 @@ def setup_ffmpeg_path():
 
 # ---------------------------- constants ---------------------------------- #
 
-DEFAULT_EXTS = {".mkv", ".mp4"}
+DEFAULT_EXTS = {".mkv", ".mp4", ".webm"}
 IGNORE_SUFFIXES = {'.bak', '.tmp'}  # Files containing these will be skipped
 H264_LEVEL_THRESHOLD = 41  # High 4.1 is Chromecast safe
 MAX_HEIGHT = 1080  # Down-scale 4 K → 1080p to stay in 4.1
 TARGET_CONTAINER = '.mp4'
+TARGET_CODEC = "h264"
+VIDEO_ENCODER = "libx264"
 TARGET_SUBTITLE_FORMAT = 'mov_text'
 
 # ------------------------------------------------------------------------- #
@@ -101,9 +102,9 @@ def are_subtitles_ok(streams: List[dict]) -> bool:
     return all(s["codec_name"] == TARGET_SUBTITLE_FORMAT for s in subs)
 
 
-def is_h264_ok(v: dict) -> bool:
+def is_video_ok(v: dict) -> bool:
     return (
-            v["codec_name"] == "h264"
+            v["codec_name"] == TARGET_CODEC
             and float(v.get("level", H264_LEVEL_THRESHOLD)) <= H264_LEVEL_THRESHOLD
             and int(v.get("coded_height", MAX_HEIGHT)) <= MAX_HEIGHT
     )
@@ -132,7 +133,7 @@ def classify(job) -> tuple[Action, EncodeOptions]:
     if job.opts.skip_audio is False and not has_aac_stereo(streams):
         encode_options.encode_audio = True
 
-    if job.opts.skip_video is False and not is_h264_ok(v):
+    if job.opts.skip_video is False and not is_video_ok(v):
         encode_options.encode_video = True
 
     if job.opts.skip_subtitles is False and not are_subtitles_ok(streams):
@@ -217,7 +218,7 @@ def looks_ok(path: Path) -> bool:
             return False
 
         container_ok = path.suffix.lower() == TARGET_CONTAINER
-        video_ok = is_h264_ok(v)
+        video_ok = is_video_ok(v)
         audio_ok = has_aac_stereo(streams)
 
         return container_ok and video_ok and audio_ok
@@ -627,7 +628,7 @@ def main():
 
     # -- Detect hardware encoder once --------------------------
     encoders = run(["ffmpeg", "-v", "quiet", "-encoders"])
-    opts.encoder = "h264_nvenc" if (opts.hvenc is True and "h264_nvenc" in encoders) else "libx264"
+    opts.encoder = "h264_nvenc" if (opts.hvenc is True and "h264_nvenc" in encoders) else VIDEO_ENCODER
 
     # quick helper for preset mapping when NVENC is active
     def _nv_map(x):
