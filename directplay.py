@@ -14,7 +14,6 @@ from enum import Enum
 from pathlib import Path
 from typing import List
 from typing import Dict, List
-import warnings
 
 # ------------------------- pretty logging ------------------------------ #
 
@@ -70,17 +69,20 @@ H264_LEVEL_THRESHOLD = 41  # High 4.1 is Chromecast safe
 MAX_HEIGHT = 1080  # Down-scale 4 K → 1080p to stay in 4.1
 
 # target settings, move those to command line?
-TARGET_CONTAINER :str = '.webm'
-DEFAULT_VIDEO_ENCODER :str = "av1_nvenc"
-TARGET_SUBTITLE_FORMAT :str = 'webvtt'
-TARGET_AUDIO_CODEC :str = 'libopus'
+TARGET_CONTAINER: str = '.webm'
+DEFAULT_VIDEO_ENCODER: str = "av1_nvenc"
+TARGET_SUBTITLE_FORMAT: str = 'webvtt'
+TARGET_AUDIO_CODEC: str = 'opus'
 
 # ------------------------------------------------------------------------- #
+
+
 class EncoderConfig:
     def __init__(self, preset: str, codec: str, additional_options: List[str]):
         self.preset = preset
-        self.codec = "";
+        self.codec = codec
         self.additional_options = additional_options
+
 
 class DefaultEncoderConfigManager:
     # Static data array
@@ -90,14 +92,14 @@ class DefaultEncoderConfigManager:
             codec="h264",
             additional_options=["-crf", "19", "-pix_fmt", "yuv420p"] # Enforce 8bit format for firefox compatibility
         ),
-         "h264_nvenc": EncoderConfig(
+        "h264_nvenc": EncoderConfig(
             preset="p4",
-            codec="hevc", # or h264?
+            codec="hevc",  # or h264?
             additional_options=[ 
                 "-rc",
                 "constqp",
                 "-qp",
-                "15", # didn't try other values
+                "15",  # didn't try other values
                 "-tune",
                 "hq",
                 # color format is handled in build_encode_cmd for now for nvenc
@@ -109,6 +111,8 @@ class DefaultEncoderConfigManager:
             additional_options=[
                 "-rc", 
                 "constqp", 
+                "-qp",
+                "20", # didn't try other values
                 "-tune", 
                 "hq",
                 "-highbitdepth",
@@ -129,7 +133,7 @@ class DefaultEncoderConfigManager:
         if encoder_name not in DefaultEncoderConfigManager.ENCODER_CONFIGS:
             raise ValueError(f"Encoder '{encoder_name}' not found in the configuration")
         
-        return DefaultEncoderConfigManager.ENCODER_CONFIGS[encoder_name].codec;
+        return DefaultEncoderConfigManager.ENCODER_CONFIGS[encoder_name].codec
 
 
 def run(cmd: List[str]) -> str:
@@ -182,14 +186,14 @@ class StreamValidator:
         )
 
     @staticmethod
-    def is_video_ok(encoder :str, v: dict) -> bool:
+    def is_video_ok(encoder: str, v: dict) -> bool:
         codec_name = v.get("codec_name")
         if codec_name is None:
             raise ValueError("codec_name is missing in the video info")
 
         if codec_name != DefaultEncoderConfigManager.get_codec_name(encoder):
             return False
-        
+
         # Dictionary mapping codec names to their validation functions
         validation_functions = {
             "h264": StreamValidator._validate_h264,
@@ -207,7 +211,7 @@ class StreamValidator:
     @staticmethod
     def is_audio_ok(streams: List[dict]) -> bool:
         for s in streams:
-            if s["codec_type"] == "audio" and s["codec_name"] ==TARGET_AUDIO_CODEC:
+            if s["codec_type"] == "audio" and s["codec_name"] == TARGET_AUDIO_CODEC:
                 return True
             
         return False
@@ -348,7 +352,8 @@ def translate_channel_layout(layout :str, target_encoder: str) -> str:
         "libopus": {
             "stereo": "stereo",
             "mono": "mono",
-            "5.1(side)": "5.1"
+            "5.1(side)": "5.1",
+            "5.1": "5.1"
             # Add more encoders and their layout translations as needed
         },
         "libfdk_aac": {
@@ -361,12 +366,12 @@ def translate_channel_layout(layout :str, target_encoder: str) -> str:
     }
 
     if target_encoder not in layout_translations:
-        warnings.warn(f"Target encoder '{target_encoder}' not found for channel layout translation. Passing existing layout as is.")
+        print(f"Target encoder '{target_encoder}' not found for channel layout translation. Passing existing layout as is.")
         return layout
 
     translations = layout_translations[target_encoder]
     if layout not in translations:
-        warnings.warn(f"Channel Layout '{layout}' has no known translation for encoder '{target_encoder}'. Passing existing layout as is.")
+        print(f"Channel Layout '{layout}' has no known translation for encoder '{target_encoder}'. Passing existing layout as is.")
         return layout
     
     return translations[layout]
@@ -391,11 +396,9 @@ def get_audio_flags(job: Job) -> list:
 
             print(f"Encoding audio with {channels} channels & layout {channel_layout}")
             flags.extend([
-                "-c:a:0", TARGET_AUDIO_CODEC,
+                "-c:a", TARGET_AUDIO_CODEC,
                 "-b:a", get_bitrate(channels),  # Dynamic bitrate based on channels
-                "-ac:0", str(channels),
                 *(["-channel_layout", channel_layout] if channel_layout else []),
-                "-metadata:s:a:0", f"channels={channels}"
             ])
             # test with ffprobe -v error -show_entries stream=channel_layout,channels -of csv=p=0 <file>
             # currently channels is borked
