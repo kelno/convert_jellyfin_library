@@ -72,6 +72,7 @@ MAX_HEIGHT = 1080  # Down-scale 4 K → 1080p to stay in 4.1
 TARGET_CONTAINER: str = '.webm'
 DEFAULT_VIDEO_ENCODER: str = "av1_nvenc"
 TARGET_SUBTITLE_FORMAT: str = 'webvtt'
+TARGET_AUDIO_ENCODER: str = 'libopus'
 TARGET_AUDIO_CODEC: str = 'opus'
 
 # ------------------------------------------------------------------------- #
@@ -376,6 +377,7 @@ def translate_channel_layout(layout :str, target_encoder: str) -> str:
     
     return translations[layout]
 
+
 def get_audio_flags(job: Job) -> list:
     """Returns FFmpeg flags based existing audio streams"""
 
@@ -390,13 +392,15 @@ def get_audio_flags(job: Job) -> list:
     if job.encode_options.audio:
         audio_stream = next((s for s in job.meta["streams"] if s["codec_type"] == "audio"), None)
         if audio_stream:
+            # always downmix to stereo
+
             channels = audio_stream.get("channels", 2)
             channel_layout = audio_stream.get("channel_layout", "")
-            channel_layout = translate_channel_layout(channel_layout, TARGET_AUDIO_CODEC)
+            channel_layout = translate_channel_layout(channel_layout, TARGET_AUDIO_ENCODER)
 
             print(f"Encoding audio with {channels} channels & layout {channel_layout}")
             flags.extend([
-                "-c:a", TARGET_AUDIO_CODEC,
+                "-c:a", TARGET_AUDIO_ENCODER,
                 "-b:a", get_bitrate(channels),  # Dynamic bitrate based on channels
                 *(["-channel_layout", channel_layout] if channel_layout else []),
             ])
@@ -407,7 +411,7 @@ def get_audio_flags(job: Job) -> list:
     else:
         flags.extend(
             [
-                "-c:a:0",
+                "-c:a",
                 "copy",
             ]
         )
@@ -499,6 +503,14 @@ def build_encode_cmd(job: Job):
             [
                 "-c:v",
                 "copy",
+            ]
+        )
+
+    if job.opts.debug is True:
+        cmd.extend(
+            [
+                "-t",
+                "30",
             ]
         )
 
@@ -660,6 +672,12 @@ def main():
         "--exts",
         default=",".join(DEFAULT_EXTS),
         help="Comma-separated list of file extensions to consider.",
+    )
+    p.add_argument(
+        "--debug",
+        action='store_true',
+        default=False,
+        help="Make a 30s sample",
     )
     opts = p.parse_args()
 
