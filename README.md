@@ -55,14 +55,17 @@ options:
                         Parallel workers. (default: 1)
   --limit LIMIT, -l LIMIT
                         Max videos to process before stopping. 0 means means unlimited. (default: 0)
-  --crf CRF             x264 Constant Rate Factor (lower = higher quality). (default: 19)
   -d, --delete-original
                         Remove source file after successful processing. (default: False)
-  --hvenc {true,false}  Use NVIDIA hvenc if possible. (default: false)
-  --preset PRESET       preset: ultrafast…slow. Will be converted to p* for h264_nvenc (default: medium)
+  --encoder ENCODER     Specify which encoder to use. (default: av1_nvenc)
+  --preset PRESET       Presets, has to match the encoder. (ex for xh264: ultrafast…slow) (default: None)
   --skip-video, -sv     Never transcode video. (default: False)
+  --skip-subtitles, -ss
+                        Never transcode subtitles. (default: False)
   --skip-audio, --sa    Never transcode video. (default: False)
-  --exts EXTS           Comma-separated list of file extensions to consider. (default: .mp4,.mkv)
+  --exts EXTS           Comma-separated list of file extensions to consider. (default: .mp4,.mkv,.webm)
+  --debug               Create a .txt file next to destination with ffmpeg command. (default: False)
+  --sample SAMPLE       Create a segment sample of given length in second. (default: 0)
 ```
 
 License

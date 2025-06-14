@@ -97,23 +97,20 @@ class DefaultEncoderConfigManager:
             preset="p4",
             codec="hevc",  # or h264?
             additional_options=[ 
-                "-rc",
-                "constqp",
-                "-qp",
-                "15",  # didn't try other values
+                "-rc", "vbr",
+                "-cq", "0"
                 "-tune",
                 "hq",
                 # color format is handled in build_encode_cmd for now for nvenc
             ]
         ),
+        #  ffmpeg -h encoder=av1_nvenc
         "av1_nvenc": EncoderConfig(
-            preset="p5",
+            preset="p4",
             codec="av1",
             additional_options=[
-                "-rc", 
-                "constqp", 
-                "-qp",
-                "20", # didn't try other values
+                "-rc", "vbr",
+                "-cq", "0",
                 "-tune", 
                 "hq",
                 "-highbitdepth",
@@ -394,15 +391,17 @@ def get_audio_flags(job: Job) -> list:
         if audio_stream:
             # always downmix to stereo
 
-            channels = audio_stream.get("channels", 2)
-            channel_layout = audio_stream.get("channel_layout", "")
-            channel_layout = translate_channel_layout(channel_layout, TARGET_AUDIO_ENCODER)
+            #channels = audio_stream.get("channels", 2)
+            #channel_layout = audio_stream.get("channel_layout", "")
+            #channel_layout = translate_channel_layout(channel_layout, TARGET_AUDIO_ENCODER)
 
-            print(f"Encoding audio with {channels} channels & layout {channel_layout}")
+            #print(f"Encoding audio with {channels} channels & layout {channel_layout}")
             flags.extend([
                 "-c:a", TARGET_AUDIO_ENCODER,
-                "-b:a", get_bitrate(channels),  # Dynamic bitrate based on channels
-                *(["-channel_layout", channel_layout] if channel_layout else []),
+                "-b:a", "192k",
+                # get_bitrate(channels),  # Dynamic bitrate based on channels
+                # *(["-channel_layout", channel_layout] if channel_layout else []),
+                "-ac", "2",
             ])
             # test with ffprobe -v error -show_entries stream=channel_layout,channels -of csv=p=0 <file>
             # currently channels is borked
@@ -506,11 +505,11 @@ def build_encode_cmd(job: Job):
             ]
         )
 
-    if job.opts.debug is True:
+    if job.opts.sample != 0:
         cmd.extend(
             [
                 "-t",
-                "30",
+                f"{job.opts.sample}",
             ]
         )
 
@@ -551,8 +550,8 @@ def process(job: Job):
     
     # 2) If dst exists and is good, skip; if stub or bad, prepare to overwrite
     if job.dst.exists() and is_stub(job.dst):
-            log("⚠", C.YEL, "Stub file detected; will overwrite", job.dst)
-            job.dst.unlink()
+        log("⚠", C.YEL, "Stub file detected; will overwrite", job.dst)
+        job.dst.unlink()
 
     cmd: list[str] = [ ]
     tmp_out: Path|None = None
@@ -569,8 +568,16 @@ def process(job: Job):
 
     # 4) Run ffmpeg, but don't let a non-zero exit kill the whole batch
     try:
+        for x in cmd:
+            if type(x) != str:
+                print(f"Found non string value {x} in cmd")
+
         print_cmd = ' '.join(cmd)
         print(f"FFmpeg command: {print_cmd}")
+        if job.opts.debug is True:
+            with open(str(job.dst) + ".txt", "w") as f:
+                f.write(print_cmd)
+
         subprocess.run(cmd, check=True, cwd=os.getcwd())
     except subprocess.CalledProcessError as e:
         # Log the failure and skip to the next file
@@ -677,7 +684,13 @@ def main():
         "--debug",
         action='store_true',
         default=False,
-        help="Make a 30s sample",
+        help="Create a .txt file next to destination with ffmpeg command.",
+    )
+    p.add_argument(
+        "--sample",
+        type=int,
+        default=0,
+        help="Create a segment sample of given length in second.",
     )
     opts = p.parse_args()
 
