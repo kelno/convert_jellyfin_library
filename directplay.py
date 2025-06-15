@@ -113,8 +113,8 @@ class DefaultEncoderConfigManager:
                 "-rc", "vbr",
                 "-cq", "0",
                 "-tune", "hq",
-                "-highbitdepth",
-                "true"
+                "-highbitdepth", "true",
+                "-multipass", "qres",
             ]
         ),
         "libopus": EncoderConfig(
