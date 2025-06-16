@@ -1,4 +1,4 @@
-_Forked from ph33nx gist: https://gist.github.com/ph33nx/b0b7a0ff64bd3f7c8961675db22b4716_
+Forked from ph33nx gist: https://gist.github.com/ph33nx/b0b7a0ff64bd3f7c8961675db22b4716
 
 directplay.py
 =============
