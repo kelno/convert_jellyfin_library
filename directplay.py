@@ -356,54 +356,29 @@ def get_bitrate(channels: int) -> str:
 
 
 def get_audio_flags(job: Job) -> list:
-    """Returns FFmpeg flags based existing audio streams"""
-
+    """Returns FFmpeg flags based on existing audio streams"""
     flags = []
 
-    flags.extend(
-        [
-            "-map",
-            "0:a:0",
-        ]
-    )
-    if job.encode_options.audio:
-        audio_stream = next((s for s in job.meta["streams"] if s["codec_type"] == "audio"), None)
-        if audio_stream:
-            
+    audio_streams = [s for s in job.meta["streams"] if s["codec_type"] == "audio"]
+
+    for i, audio_stream in enumerate(audio_streams):
+        flags.extend([
+            "-map", f"0:a:{i}",
+        ])
+
+        if job.encode_options.audio:
             encoder_default_config = DefaultEncoderConfigManager.get(job.opts.encoder)
 
-            # always downmix to stereo
-
+            # Always downmix to stereo
             flags.extend([
                 "-c:a", TARGET_AUDIO_ENCODER,
                 "-ac", "2",
             ])
             flags.extend(encoder_default_config.options)
-            # Test channel layout: with ffprobe -v error -show_entries stream=channel_layout,channels -of csv=p=0 <file>
         else:
-            print(f"Failed to get audio streams for {job.src}")
-
-         
-        # just copy other streams if any
-        flags.extend(
-            [
-                "-map",
-                "0:a:1?",
-                "-c:a:1",
-                "copy",
-                "-map",
-                "0:a:2?",
-                "-c:a:2",
-                "copy",
-            ]
-        )
-    else:
-        flags.extend(
-            [
-                "-c:a",
-                "copy",
-            ]
-        )
+            flags.extend([
+                "-c:a", "copy",
+            ])
 
     return flags
 
