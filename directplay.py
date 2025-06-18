@@ -193,6 +193,7 @@ class StreamValidator:
             and int(v.get("coded_height", MAX_HEIGHT)) <= MAX_HEIGHT
         )
 
+
     @staticmethod
     def is_video_ok(encoder: str, v: dict) -> bool:
         codec_name = v.get("codec_name")
@@ -343,16 +344,6 @@ def get_subtitle_flags(job: Job) -> list:
         ])
 
     return flags
-
-
-def get_bitrate(channels: int) -> str:
-    """Returns appropriate AAC bitrate based on channel count"""
-    return {
-        1: "96k",  # Mono
-        2: "128k",  # Stereo
-        6: "384k",  # 5.1
-        8: "512k"  # 7.1
-    }.get(channels, f"{channels * 64}k")  # Default: 64k per channel
 
 
 def get_audio_flags(job: Job) -> list:
