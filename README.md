@@ -37,7 +37,8 @@ Quick start
 -----------
 
 ### Example:   
-`python directplay.py -j 2 --delete-original /mnt/media /video/new`
+This will process all files in given directories, with 2 threads, deleting the originals.  
+`python directplay.py --workers 2 --delete-original /mnt/media /mnt/anotheroptionalmedia/`
 
 /!\ Currently, existing .srt files are added to the container but not removed. They might be re added on subsequent runs!
  
@@ -76,4 +77,4 @@ Apache-2.0 — use it, fork it, profit.
 Author
 ------
 © 2025 ph33nx   https://github.com/ph33nx
-© 2025 Kelno   https://github.com/kelno
+2025 Kelno   https://github.com/kelno

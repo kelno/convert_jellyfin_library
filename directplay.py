@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
 import platform
@@ -70,19 +71,29 @@ H264_LEVEL_THRESHOLD = 41  # High 4.1 is Chromecast safe
 MAX_HEIGHT = 1080  # Down-scale 4 K → 1080p to stay in 4.1
 
 # target settings, move those to command line?
-TARGET_CONTAINER: str = '.webm'
+DEFAULT_CONTAINER: str = 'webm'
 DEFAULT_VIDEO_ENCODER: str = "av1_nvenc"
 TARGET_SUBTITLE_FORMAT: str = 'webvtt'
 TARGET_AUDIO_ENCODER: str = 'libopus'
 
+@dataclass
+class ContainerConfig:
+    pass # empty for now
+
 # ------------------------------------------------------------------------- #
 
 
+@dataclass
 class EncoderConfig:
-    def __init__(self, codec_name: str, options: List[str]):
-        self.codec_name = codec_name
-        self.options = options
+    codec_name: str
+    options: List[str]
 
+
+CONTAINER_CONFIGS: Dict[str, ContainerConfig] = {
+    "mp4": ContainerConfig(),
+    "mkv": ContainerConfig(),
+    "webm": ContainerConfig(),
+}
 
 class DefaultEncoderConfigManager:
     # Static data array
@@ -167,10 +178,12 @@ def ffprobe(path: Path) -> dict:
     )
 
 
+@dataclass
 class StreamValidator:
+    video_encoder: str
+    extra_allowed_video_codecs: list[str]
 
-    @staticmethod
-    def are_subtitles_ok(streams: List[dict]) -> bool:
+    def are_subtitles_ok(self, streams: List[dict]) -> bool:
         subs = [s for s in streams if s["codec_type"] == "subtitle"]
 
         if not subs:
@@ -179,28 +192,28 @@ class StreamValidator:
         # ok if every sub is already target format
         return all(s["codec_name"] == TARGET_SUBTITLE_FORMAT for s in subs)
 
-    @staticmethod
-    def _validate_h264(v: dict) -> bool:
+    def _validate_h264(self, video_stream: dict) -> bool:
         return (
-            float(v.get("level", H264_LEVEL_THRESHOLD)) <= H264_LEVEL_THRESHOLD
-            and int(v.get("coded_height", MAX_HEIGHT)) <= MAX_HEIGHT
+            float(video_stream.get("level", H264_LEVEL_THRESHOLD)) <= H264_LEVEL_THRESHOLD
+            and int(video_stream.get("coded_height", MAX_HEIGHT)) <= MAX_HEIGHT
         )
 
-    @staticmethod
-    def _validate_av1(v: dict) -> bool:
+    def _validate_av1(self, video_stream: dict) -> bool:
         return (
-            float(v.get("level", H264_LEVEL_THRESHOLD)) <= H264_LEVEL_THRESHOLD
-            and int(v.get("coded_height", MAX_HEIGHT)) <= MAX_HEIGHT
+            float(video_stream.get("level", H264_LEVEL_THRESHOLD)) <= H264_LEVEL_THRESHOLD
+            and int(video_stream.get("coded_height", MAX_HEIGHT)) <= MAX_HEIGHT
         )
 
 
-    @staticmethod
-    def is_video_ok(encoder: str, v: dict) -> bool:
-        codec_name = v.get("codec_name")
+    def is_video_ok(self, video_stream: dict) -> bool:
+        codec_name = video_stream.get("codec_name")
         if codec_name is None:
             raise ValueError("codec_name is missing in the video info")
 
-        if codec_name != DefaultEncoderConfigManager.get_codec_name(encoder):
+        if codec_name in self.extra_allowed_video_codecs:
+            return True
+        
+        if codec_name != DefaultEncoderConfigManager.get_codec_name(self.video_encoder):
             return False
 
         # Dictionary mapping codec names to their validation functions
@@ -213,7 +226,7 @@ class StreamValidator:
         validate = validation_functions.get(codec_name)
 
         if validate:
-            return validate(v)
+            return validate(self, video_stream)
         else:
             raise ValueError(f"Target codec is not supported by this script: {codec_name}")
 
@@ -227,9 +240,10 @@ class StreamValidator:
 
 
 class Job:
-    def __init__(self, src: Path, opts):
+    def __init__(self, src: Path, opts, extra_allowed_video_codecs: list[str]):
         self.src = src
         self.opts = opts
+        self.extra_allowed_video_codecs = extra_allowed_video_codecs
         try:
             self.meta = ffprobe(src)
             self.action, self.encode_options = self.classify()
@@ -276,31 +290,32 @@ class Job:
                 print(f"⚠️  Unreadable or non-video file, skipping {src}")
                 self.action = Action.SKIP
 
-        self.dst: Path = src.with_suffix(TARGET_CONTAINER)
+        self.dst: Path = src.with_suffix(f".{opts.container}")
 
     def classify(self) -> tuple[Action, EncodeOptions]:
         """
         Decide what to do with `job.src`.
         """
          
-        options = EncodeOptions(False, False, False)
+        options = EncodeOptions(audio=False, video=False, subtitles=False)
 
         streams = self.meta["streams"]
-        v = next((s for s in streams if s["codec_type"] == "video"), None)
-        if v is None:  # no video stream at all
+        video_stream = next((s for s in streams if s["codec_type"] == "video"), None)
+        if video_stream is None:  # no video stream at all
             log("⚠", C.YEL, "No video stream; skipping", self.src)
             return Action.SKIP, options
 
-        if self.opts.skip_audio is False and not StreamValidator.is_audio_ok(streams):
+        stream_validator = StreamValidator(self.opts.encoder, self.extra_allowed_video_codecs)
+        if self.opts.skip_audio is False and not stream_validator.is_audio_ok(streams):
             options.audio = True
 
-        if self.opts.skip_video is False and not StreamValidator.is_video_ok(self.opts.encoder, v):
+        if self.opts.skip_video is False and not stream_validator.is_video_ok(video_stream):
             options.video = True
 
-        if self.opts.skip_subtitles is False and not StreamValidator.are_subtitles_ok(streams):
+        if self.opts.skip_subtitles is False and not stream_validator.are_subtitles_ok(streams):
             options.subtitles = True
 
-        if self.src.suffix.lower() == TARGET_CONTAINER and not options.has_any_encode():
+        if self.src.suffix.lower() == DEFAULT_CONTAINER and not options.has_any_encode():
             return Action.SKIP, options
 
         # Some remux or transcode to do
@@ -322,7 +337,7 @@ def get_subtitle_flags(job: Job) -> list:
 
     flags = []
 
-    if TARGET_CONTAINER == ".webm" and TARGET_SUBTITLE_FORMAT != "webvtt":
+    if job.opts.container == "webm" and TARGET_SUBTITLE_FORMAT != "webvtt":
         raise ValueError(f"Unsupported subtitle format for webm container: '{TARGET_SUBTITLE_FORMAT}'")
 
     if job.encode_options.subtitles:
@@ -543,6 +558,10 @@ def gather_files(roots, exts, limit: int) -> List[Path]:
     files = []
 
     for root in roots:
+        if not Path(root).exists():
+            raise FileNotFoundError(f"Root directory does not exist: {root}")
+
+        print(f"Scanning {root} …")
         for p in Path(root).rglob("*"):
             # skip dot-files created by macOS (._foo, .DS_Store, etc.)
             if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in exts and not any(
@@ -558,7 +577,7 @@ def main():
     setup_ffmpeg_path()
     p = argparse.ArgumentParser(description="Pre-encode / remux videos for Chromecast.",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument("roots", nargs="+", help="Root directories to scan.")
+    p.add_argument("roots", nargs="+", help="Root directories to scan & convert.")
     p.add_argument(
         "-j",
         "--workers",
@@ -587,10 +606,22 @@ def main():
         help=f"Specify which encoder to use. Supported encoders are: {DefaultEncoderConfigManager.get_supported_encoders()}",
     )
     p.add_argument(
+        "--allowed-video-codecs",
+        type=str,
+        default="",
+        help=f"A (string separated) list of other video codecs format that don't need to be converted if found, such as 'av1'. MUST BE ABLE TO FIT INTO A WEBM.",
+    )
+    p.add_argument(
         "--preset",
         type=str,
         default=None,
         help="Presets, has to match the encoder. (ex for xh264: ultrafast…slow)",
+    )
+    p.add_argument(
+        "--container",
+        type=str,
+        default=DEFAULT_CONTAINER,
+        help=f"Which container to use. Supported containers are: {list(CONTAINER_CONFIGS.keys())}",
     )
     p.add_argument(
         "--skip-video",
@@ -628,7 +659,7 @@ def main():
         "--sample",
         type=int,
         default=0,
-        help="Create a segment sample of given length in second.",
+        help="(Debug) Create a segment sample of given length in second.",
     )
     opts = p.parse_args()
 
@@ -660,12 +691,21 @@ def main():
     
     exts = {e if e.startswith(".") else f".{e}" for e in opts.exts.split(",")}
 
-    print("Scanning …")
+    # On Windows, cmd path auto completion when dir has spaces may be interpreted here as escaped quote. Example: 'C:\path\to\some dir\'
+    opts.roots = [r.strip('\'"') for r in opts.roots]
+
+    print("Parsed roots:", opts.roots)
+    for r in opts.roots:
+        print(repr(r))
     files = gather_files(opts.roots, exts, opts.limit)
     print(f"Found {len(files)} candidate files.\n")
 
+    extra_allowed_video_codecs: list[str] = opts.allowed_video_codecs.split(",")
+    if opts.container not in CONTAINER_CONFIGS:
+        raise ValueError(f"Container '{opts.container}' is not supported. Supported containers are: {list(CONTAINER_CONFIGS.keys())}")
+
     with ProcessPoolExecutor(max_workers=opts.workers) as executor:
-        jobs = [Job(f, opts) for f in files]
+        jobs = [Job(f, opts, extra_allowed_video_codecs) for f in files]
         results = executor.map(process, jobs)
         # print errors if any
         for result in results:
