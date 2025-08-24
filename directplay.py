@@ -131,7 +131,7 @@ class DefaultEncoderConfigManager:
         "libopus": EncoderConfig(
             codec_name="opus",
             options=[
-                "-b:a", "192k" # assuming stereo
+                "-b:a", "192k" # assuming stereo output
             ]
         ),
     }
@@ -337,16 +337,28 @@ def get_subtitle_flags(job: Job) -> list:
 
     flags = []
 
-    if job.opts.container == "webm" and TARGET_SUBTITLE_FORMAT != "webvtt":
-        raise ValueError(f"Unsupported subtitle format for webm container: '{TARGET_SUBTITLE_FORMAT}'")
+    subtitle_streams = [s for s in job.meta["streams"] if s["codec_type"] == "subtitle"]
+    bitmap_codecs = {"hdmv_pgs_subtitle", "dvd_subtitle", "vobsub"}
+    has_bitmap = any(s["codec_name"] in bitmap_codecs for s in subtitle_streams)
 
-    if job.encode_options.subtitles:
+    if job.opts.container == "webm":
+        if TARGET_SUBTITLE_FORMAT != "webvtt":
+            raise ValueError(f"Unsupported subtitle format for webm container: '{TARGET_SUBTITLE_FORMAT}'")
+        if has_bitmap:
+            raise ValueError(f"Can't convert bitmap subtitles for target webm container")
+    
+    if has_bitmap:
+        # Try to copy bitmap subtitles, can't convert those
+        flags.extend([
+            "-map", "0:s?",
+            "-c:s", "copy",
+        ])
+    elif job.encode_options.subtitles:
         flags.extend([
             "-map",
             "0:s?",
             "-c:s",
             TARGET_SUBTITLE_FORMAT,
-            "-ignore_unknown"
         ])
     else:
         # That's fine if there are none
@@ -355,8 +367,8 @@ def get_subtitle_flags(job: Job) -> list:
             "0:s?",
             "-c:s",
             "copy",
-            "-ignore_unknown"
         ])
+    flags.extend(["-ignore_unknown"])
 
     return flags
 
