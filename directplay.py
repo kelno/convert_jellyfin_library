@@ -107,11 +107,11 @@ class DefaultEncoderConfigManager:
             ] 
         ),
         "h264_nvenc": EncoderConfig(
-            codec_name="hevc",  # or h264?
+            codec_name="h264",
             options=[ 
                 "-preset", "p4",
                 "-rc", "vbr",
-                "-cq", "0"
+                "-cq", "0",
                 "-tune", "hq",
                 # color format is handled in build_encode_cmd for now for nvenc
             ]
