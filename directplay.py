@@ -23,11 +23,11 @@ class Action(Enum):
     ENCODE = "encode"
 
 
+@dataclass
 class EncodeOptions:
-    def __init__(self, audio: bool = False, video: bool = False, subtitles: bool = False):
-        self.audio: bool = audio
-        self.video: bool = video
-        self.subtitles: bool = subtitles
+    audio: bool
+    video: bool
+    subtitles: bool
 
     def has_any_encode(self) -> bool:
         return self.audio or self.video or self.subtitles
@@ -66,7 +66,7 @@ def setup_ffmpeg_path():
 # ---------------------------- constants ---------------------------------- #
 
 DEFAULT_EXTS = {".mkv", ".mp4", ".webm"}
-IGNORE_SUFFIXES = {'.bak', '.tmp'}  # Files containing these will be skipped
+IGNORE_SUFFIXES = {".bak", ".tmp"}  # Files containing these will be skipped
 H264_LEVEL_THRESHOLD = 41  # High 4.1 is Chromecast safe
 MAX_HEIGHT = 1080  # Down-scale 4 K → 1080p to stay in 4.1
 
@@ -141,9 +141,7 @@ class DefaultEncoderConfigManager:
                 "qres",
             ],
         ),
-        "libopus": EncoderConfig(
-            codec_name="opus", options=["-b:a", "192k"]  # assuming stereo output
-        ),
+        "libopus": EncoderConfig(codec_name="opus", options=["-b:a", "192k"]),  # assuming stereo output
     }
 
     @staticmethod
@@ -204,18 +202,13 @@ class StreamValidator:
 
     def _validate_h264(self, video_stream: dict) -> bool:
         return (
-            float(video_stream.get("level", H264_LEVEL_THRESHOLD))
-            <= H264_LEVEL_THRESHOLD
-            and int(video_stream.get("coded_height", MAX_HEIGHT)) <= MAX_HEIGHT
+            float(video_stream.get("level", H264_LEVEL_THRESHOLD)) <= H264_LEVEL_THRESHOLD and int(video_stream.get("coded_height", MAX_HEIGHT)) <= MAX_HEIGHT
         )
 
     def _validate_av1(self, video_stream: dict) -> bool:
         return (
-            float(video_stream.get("level", H264_LEVEL_THRESHOLD))
-            <= H264_LEVEL_THRESHOLD
-            and int(video_stream.get("coded_height", MAX_HEIGHT)) <= MAX_HEIGHT
+            float(video_stream.get("level", H264_LEVEL_THRESHOLD)) <= H264_LEVEL_THRESHOLD and int(video_stream.get("coded_height", MAX_HEIGHT)) <= MAX_HEIGHT
         )
-
 
     def is_video_ok(self, video_stream: dict) -> bool:
         codec_name = video_stream.get("codec_name")
@@ -247,7 +240,7 @@ class StreamValidator:
         for s in streams:
             if s["codec_type"] == "audio" and s["codec_name"] == DefaultEncoderConfigManager.get_codec_name(TARGET_AUDIO_ENCODER):
                 return True
-            
+
         return False
 
 
@@ -470,9 +463,7 @@ def build_encode_cmd(job: Job):
         need_downscale = int(v.get("coded_height", 0)) > MAX_HEIGHT
 
         # Only use the CUDA scaler if we also decoded on CUDA (i.e. input was H.264)
-        if job.opts.encoder == "h264_nvenc" and (
-            codec_name == "h264" or codec_name == "hevc"
-        ):
+        if job.opts.encoder == "h264_nvenc" and (codec_name == "h264" or codec_name == "hevc"):
             if need_downscale:
                 vfilters.append(f"scale_cuda=-2:{MAX_HEIGHT}:format=yuv420p")
             else:
@@ -618,12 +609,7 @@ def gather_files(roots, exts, limit: int) -> List[Path]:
             if p.name.startswith("."):
                 continue
 
-            if (
-                p.is_file()
-                and not p.name.startswith(".")
-                and p.suffix.lower() in exts
-                and not any(ignore in p.name for ignore in IGNORE_SUFFIXES)
-            ):
+            if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in exts and not any(ignore in p.name for ignore in IGNORE_SUFFIXES):
                 files.append(p)
                 if limit != 0 and len(files) >= limit:
                     return files
@@ -728,8 +714,7 @@ def main():
         os_hint = {
             "Windows": "winget install Gyan.FFmpeg",
             "Darwin": "brew install ffmpeg",
-            "Linux": "sudo apt install ffmpeg   # Debian/Ubuntu\n"
-            "  sudo dnf install ffmpeg   # Fedora/RHEL",
+            "Linux": "sudo apt install ffmpeg   # Debian/Ubuntu\n" "  sudo dnf install ffmpeg   # Fedora/RHEL",
         }.get(platform.system(), "Install ffmpeg from your package manager")
 
         msg = textwrap.dedent(
