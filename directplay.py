@@ -70,15 +70,11 @@ IGNORE_SUFFIXES = {".bak", ".tmp"}  # Files containing these will be skipped
 H264_LEVEL_THRESHOLD = 41  # High 4.1 is Chromecast safe
 MAX_HEIGHT = 1080  # Down-scale 4 K → 1080p to stay in 4.1
 
-# target settings, move those to command line?
-DEFAULT_CONTAINER: str = 'webm'
 DEFAULT_VIDEO_ENCODER: str = "av1_nvenc"
-TARGET_SUBTITLE_FORMAT: str = 'webvtt'
-TARGET_AUDIO_ENCODER: str = 'libopus'
+TARGET_SUBTITLE_FORMAT: str = "webvtt"
+TARGET_AUDIO_ENCODER: str = "libopus"
 
-@dataclass
-class ContainerConfig:
-    pass # empty for now
+ALWAYS_VALID_CODEC = "h264"
 
 # ------------------------------------------------------------------------- #
 
@@ -88,12 +84,6 @@ class EncoderConfig:
     codec_name: str
     options: List[str]
 
-
-CONTAINER_CONFIGS: Dict[str, ContainerConfig] = {
-    "mp4": ContainerConfig(),
-    "mkv": ContainerConfig(),
-    "webm": ContainerConfig(),
-}
 
 class DefaultEncoderConfigManager:
     # Static data array
@@ -178,6 +168,7 @@ def ffprobe(path: Path) -> dict:
                 "-loglevel",
                 "error",
                 "-show_streams",
+                "-show_format",
                 "-print_format",
                 "json",
                 str(path),
@@ -189,7 +180,6 @@ def ffprobe(path: Path) -> dict:
 @dataclass
 class StreamValidator:
     video_encoder: str
-    extra_allowed_video_codecs: list[str]
 
     def are_subtitles_ok(self, streams: List[dict]) -> bool:
         subs = [s for s in streams if s["codec_type"] == "subtitle"]
@@ -215,10 +205,7 @@ class StreamValidator:
         if codec_name is None:
             raise ValueError("codec_name is missing in the video info")
 
-        if codec_name in self.extra_allowed_video_codecs:
-            return True
-        
-        if codec_name != DefaultEncoderConfigManager.get_codec_name(self.video_encoder):
+        if codec_name != ALWAYS_VALID_CODEC and codec_name != DefaultEncoderConfigManager.get_codec_name(self.video_encoder):
             return False
 
         # Dictionary mapping codec names to their validation functions
@@ -244,11 +231,25 @@ class StreamValidator:
         return False
 
 
+@dataclass
+class JobOptions:
+    workers: int
+    limit: int
+    delete_original: bool
+    encoder: str
+    preset: str
+    skip_video: bool
+    skip_audio: bool
+    skip_subtitles: bool
+    exts: list[str]
+    debug: bool
+    sample: int
+
+
 class Job:
-    def __init__(self, src: Path, opts, extra_allowed_video_codecs: list[str]):
+    def __init__(self, src: Path, opts: JobOptions):
         self.src = src
         self.opts = opts
-        self.extra_allowed_video_codecs = extra_allowed_video_codecs
         try:
             self.meta = ffprobe(src)
             self.action, self.encode_options = self.classify()
@@ -295,7 +296,7 @@ class Job:
                 print(f"⚠️  Unreadable or non-video file, skipping {src}")
                 self.action = Action.SKIP
 
-        self.dst: Path = src.with_suffix(f".{opts.container}")
+        self.dst: Path = src.with_suffix(".mkv")
 
     def classify(self) -> tuple[Action, EncodeOptions]:
         """
@@ -305,12 +306,13 @@ class Job:
         options = EncodeOptions(audio=False, video=False, subtitles=False)
 
         streams = self.meta["streams"]
+        formats = self.meta["format"]["format_name"].split(",")
         video_stream = next((s for s in streams if s["codec_type"] == "video"), None)
         if video_stream is None:  # no video stream at all
             log("⚠", C.YEL, "No video stream; skipping", self.src)
             return Action.SKIP, options
 
-        stream_validator = StreamValidator(self.opts.encoder, self.extra_allowed_video_codecs)
+        stream_validator = StreamValidator(self.opts.encoder)
         if self.opts.skip_audio is False and not stream_validator.is_audio_ok(streams):
             options.audio = True
 
@@ -320,7 +322,9 @@ class Job:
         if self.opts.skip_subtitles is False and not stream_validator.are_subtitles_ok(streams):
             options.subtitles = True
 
-        if self.src.suffix.lower() == DEFAULT_CONTAINER and not options.has_any_encode():
+        # if we're already MKV/WebM and we don't have anything to reencode
+        # (webm will also return matroska)
+        if "matroska" in formats and not options.has_any_encode():
             return Action.SKIP, options
 
         # Some remux or transcode to do
@@ -347,12 +351,6 @@ def get_subtitle_flags(job: Job) -> list:
     bitmap_codecs = {"hdmv_pgs_subtitle", "dvd_subtitle", "vobsub"}
     has_bitmap = any(s["codec_name"] in bitmap_codecs for s in subtitle_streams)
 
-    if job.opts.container == "webm":
-        if TARGET_SUBTITLE_FORMAT != "webvtt":
-            raise ValueError(f"Unsupported subtitle format for webm container: '{TARGET_SUBTITLE_FORMAT}'")
-        if has_bitmap:
-            raise ValueError(f"Can't convert bitmap subtitles for target webm container")
-    
     if has_bitmap:
         # Try to copy bitmap subtitles, can't convert those
         flags.extend(
@@ -435,6 +433,10 @@ def build_encode_cmd(job: Job):
         "-y",
         "-hwaccel",
         "auto",
+        "-fflags",
+        "+genpts+fastseek",
+        "-i",
+        str(job.src),
     ]
 
     v = next(s for s in job.meta["streams"] if s["codec_type"] == "video")
@@ -442,12 +444,19 @@ def build_encode_cmd(job: Job):
 
     print(f"Found video codec {codec_name}")
 
+    # all inputs first before any mapping
+    srt_file_input = job.src.with_suffix(".srt")
+    if srt_file_input.exists():
+        print(f"Found subtitle {srt_file_input}")
+        cmd.extend(
+            [
+                "-i",
+                str(srt_file_input),
+            ]
+        )
+
     cmd.extend(
         [
-            "-fflags",
-            "+genpts+fastseek",
-            "-i",
-            str(job.src),
             "-movflags",
             "+faststart",
             "-g",
@@ -504,20 +513,18 @@ def build_encode_cmd(job: Job):
             ]
         )
 
-    srt_file = job.src.with_suffix(".srt")
-    if srt_file.exists():
-        print(f"Found subtitle {srt_file}")
+    cmd.extend(get_audio_flags(job))
+    cmd.extend(get_subtitle_flags(job))
+
+    srt_file_input = job.src.with_suffix(".srt")
+    if srt_file_input.exists():
+        print(f"Found subtitle {srt_file_input}")
         cmd.extend(
             [
-                "-i",
-                str(srt_file),
                 "-map",
                 "1:s",
             ]
         )
-
-    cmd.extend(get_audio_flags(job))
-    cmd.extend(get_subtitle_flags(job))
 
     tmp_out = job.dst.with_stem(job.dst.stem + ".tmp")
     cmd.extend(
@@ -582,9 +589,15 @@ def process(job: Job):
     # 5) On success: atomic swap & optional delete
     if tmp_out and tmp_out.exists():
         if job.dst.exists():
-            bak_file = job.dst.with_stem(job.dst.stem + ".bak")
-            job.dst.replace(bak_file)
-            log("⚠", C.YEL, "Existing file will renamed to", bak_file)
+            # special case if we want the same name, use a new file name
+            if job.src == job.dst:
+                new_file = job.dst.with_stem(".directplay" + job.dst.stem)
+                job.dst.replace(new_file)
+                log("⚠", C.YEL, "New file will be named", new_file)
+            else:
+                bak_file = job.dst.with_stem(job.dst.stem + ".bak")
+                job.dst.replace(bak_file)
+                log("⚠", C.YEL, "Existing file will renamed to", bak_file)
 
         tmp_out.rename(job.dst)
 
@@ -652,22 +665,10 @@ def main():
         help=f"Specify which encoder to use. Supported encoders are: {DefaultEncoderConfigManager.get_supported_encoders()}",
     )
     p.add_argument(
-        "--allowed-video-codecs",
-        type=str,
-        default="",
-        help=f"A (string separated) list of other video codecs format that don't need to be converted if found, such as 'av1'. MUST BE ABLE TO FIT INTO A WEBM.",
-    )
-    p.add_argument(
         "--preset",
         type=str,
         default=None,
         help="Presets, has to match the encoder. (ex for xh264: ultrafast…slow)",
-    )
-    p.add_argument(
-        "--container",
-        type=str,
-        default=DEFAULT_CONTAINER,
-        help=f"Which container to use. Supported containers are: {list(CONTAINER_CONFIGS.keys())}",
     )
     p.add_argument(
         "--skip-video",
@@ -748,12 +749,22 @@ def main():
     files = gather_files(opts.roots, exts, opts.limit)
     print(f"Found {len(files)} candidate files.\n")
 
-    extra_allowed_video_codecs: list[str] = opts.allowed_video_codecs.split(",")
-    if opts.container not in CONTAINER_CONFIGS:
-        raise ValueError(f"Container '{opts.container}' is not supported. Supported containers are: {list(CONTAINER_CONFIGS.keys())}")
+    options = JobOptions(
+        workers=opts.workers,
+        limit=opts.limit,
+        delete_original=opts.delete_original,
+        encoder=opts.encoder,
+        preset=opts.preset,
+        skip_video=opts.skip_video,
+        skip_audio=opts.skip_audio,
+        skip_subtitles=opts.skip_subtitles,
+        exts=opts.exts,
+        debug=opts.debug,
+        sample=opts.sample,
+    )
 
     with ProcessPoolExecutor(max_workers=opts.workers) as executor:
-        jobs = [Job(f, opts, extra_allowed_video_codecs) for f in files]
+        jobs = [Job(f, options) for f in files]
         results = executor.map(process, jobs)
         # print errors if any
         for result in results:

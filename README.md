@@ -6,14 +6,13 @@ directplay.py
 Batch-optimise my video library so every file direct-plays on my devices, and hopefully most others as well.
 
 This script ensure the following:
-- Video is using a webm container
+- Video is using a mkv or webm container
 - Video is:
-  - Codec AV1 (controlled by command line)
+  - Codec H264 (always valid) or AV1 (controlled by command line)
   - Max height 1080
   - Max level 4.1
 - Audio codec is opus in stereo
-- Subtitles are converted to webVTT format
-- Subtitles files matching <video_name.srt> are also automatically added to the container (but not removed as of writing)
+- Subtitles files matching <video_name.srt> are also automatically added to the container (but not removed as of writing), converted in the webVTT format
 
 Key features
 ------------
@@ -21,7 +20,7 @@ Key features
 - **Smart decision tree** – tries lightning-fast remux first; falls back to re-encode only when needed.
 - **Recursive scan** – pass one or more root folders; sub-directories handled automatically.
 - **Parallel workers** (-j / --workers) – use 1 CPU cores by default.
-- **Quality knobs** – --crf and --preset expose x264 controls; defaults tuned for "Netflix-like" 1080 p quality.
+- **Quality knobs** – --preset expose x264 controls; defaults tuned for "Netflix-like" 1080 p quality.
 - **Safe by default** – outputs <name>.webm in the same folder; originals retained as `<name>.bak.webm` unless you specify --delete-original.
 - **Idempotent** – re-runs skip files already compliant; perfect for nightly cron/systemd-timer jobs.
 
