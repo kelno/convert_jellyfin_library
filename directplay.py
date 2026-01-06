@@ -101,38 +101,48 @@ class DefaultEncoderConfigManager:
         "libx264": EncoderConfig(
             codec_name="h264",
             options=[
-                "-preset", "medium",
-                "-crf", "19", 
-                "-pix_fmt", "yuv420p"  # Enforce 8bit format for firefox compatibility
-            ] 
+                "-preset",
+                "medium",
+                "-crf",
+                "19",
+                "-pix_fmt",
+                "yuv420p",  # Enforce 8bit format for firefox compatibility
+            ],
         ),
         "h264_nvenc": EncoderConfig(
             codec_name="h264",
-            options=[ 
-                "-preset", "p4",
-                "-rc", "vbr",
-                "-cq", "0",
-                "-tune", "hq",
+            options=[
+                "-preset",
+                "p4",
+                "-rc",
+                "vbr",
+                "-cq",
+                "0",
+                "-tune",
+                "hq",
                 # color format is handled in build_encode_cmd for now for nvenc
-            ]
+            ],
         ),
         #  ffmpeg -h encoder=av1_nvenc
         "av1_nvenc": EncoderConfig(
             codec_name="av1",
             options=[
-                "-preset", "p4",
-                "-rc", "vbr",
-                "-cq", "0",
-                "-tune", "hq",
-                "-highbitdepth", "true",
-                "-multipass", "qres",
-            ]
+                "-preset",
+                "p4",
+                "-rc",
+                "vbr",
+                "-cq",
+                "0",
+                "-tune",
+                "hq",
+                "-highbitdepth",
+                "true",
+                "-multipass",
+                "qres",
+            ],
         ),
         "libopus": EncoderConfig(
-            codec_name="opus",
-            options=[
-                "-b:a", "192k" # assuming stereo output
-            ]
+            codec_name="opus", options=["-b:a", "192k"]  # assuming stereo output
         ),
     }
 
@@ -142,12 +152,12 @@ class DefaultEncoderConfigManager:
             raise ValueError(f"Encoder '{encoder_name}' not found in the configuration")
 
         return DefaultEncoderConfigManager.ENCODER_CONFIGS[encoder_name]
-    
+
     @staticmethod
     def get_codec_name(encoder_name: str) -> str:
         if encoder_name not in DefaultEncoderConfigManager.ENCODER_CONFIGS:
             raise ValueError(f"Encoder '{encoder_name}' not found in the configuration")
-        
+
         return DefaultEncoderConfigManager.ENCODER_CONFIGS[encoder_name].codec_name
 
     @staticmethod
@@ -157,7 +167,7 @@ class DefaultEncoderConfigManager:
 
 def run(cmd: List[str]) -> str:
     """Run command, return stdout text, raise on error."""
-    return subprocess.check_output(cmd, text=True)
+    return subprocess.check_output(cmd, text=True, encoding="utf-8")
 
 
 def ffprobe(path: Path) -> dict:
@@ -194,13 +204,15 @@ class StreamValidator:
 
     def _validate_h264(self, video_stream: dict) -> bool:
         return (
-            float(video_stream.get("level", H264_LEVEL_THRESHOLD)) <= H264_LEVEL_THRESHOLD
+            float(video_stream.get("level", H264_LEVEL_THRESHOLD))
+            <= H264_LEVEL_THRESHOLD
             and int(video_stream.get("coded_height", MAX_HEIGHT)) <= MAX_HEIGHT
         )
 
     def _validate_av1(self, video_stream: dict) -> bool:
         return (
-            float(video_stream.get("level", H264_LEVEL_THRESHOLD)) <= H264_LEVEL_THRESHOLD
+            float(video_stream.get("level", H264_LEVEL_THRESHOLD))
+            <= H264_LEVEL_THRESHOLD
             and int(video_stream.get("coded_height", MAX_HEIGHT)) <= MAX_HEIGHT
         )
 
@@ -296,7 +308,7 @@ class Job:
         """
         Decide what to do with `job.src`.
         """
-         
+
         options = EncodeOptions(audio=False, video=False, subtitles=False)
 
         streams = self.meta["streams"]
@@ -324,6 +336,7 @@ class Job:
 
 # ---------------------------------------------------------------------- #
 
+
 # helper: detect obvious stubs (0-byte or < 1 MiB)
 def is_stub(p: Path) -> bool:
     try:
@@ -349,25 +362,33 @@ def get_subtitle_flags(job: Job) -> list:
     
     if has_bitmap:
         # Try to copy bitmap subtitles, can't convert those
-        flags.extend([
-            "-map", "0:s?",
-            "-c:s", "copy",
-        ])
+        flags.extend(
+            [
+                "-map",
+                "0:s?",
+                "-c:s",
+                "copy",
+            ]
+        )
     elif job.encode_options.subtitles:
-        flags.extend([
-            "-map",
-            "0:s?",
-            "-c:s",
-            TARGET_SUBTITLE_FORMAT,
-        ])
+        flags.extend(
+            [
+                "-map",
+                "0:s?",
+                "-c:s",
+                TARGET_SUBTITLE_FORMAT,
+            ]
+        )
     else:
         # That's fine if there are none
-        flags.extend([
-            "-map",
-            "0:s?",
-            "-c:s",
-            "copy",
-        ])
+        flags.extend(
+            [
+                "-map",
+                "0:s?",
+                "-c:s",
+                "copy",
+            ]
+        )
     flags.extend(["-ignore_unknown"])
 
     return flags
@@ -379,24 +400,34 @@ def get_audio_flags(job: Job) -> list:
 
     audio_streams = [s for s in job.meta["streams"] if s["codec_type"] == "audio"]
 
-    for i, audio_stream in enumerate(audio_streams):
-        flags.extend([
-            "-map", f"0:a:{i}",
-        ])
+    for i, _audio_stream in enumerate(audio_streams):
+        flags.extend(
+            [
+                "-map",
+                f"0:a:{i}",
+            ]
+        )
 
         if job.encode_options.audio:
             encoder_default_config = DefaultEncoderConfigManager.get(job.opts.encoder)
 
             # Always downmix to stereo
-            flags.extend([
-                "-c:a", TARGET_AUDIO_ENCODER,
-                "-ac", "2",
-            ])
+            flags.extend(
+                [
+                    "-c:a",
+                    TARGET_AUDIO_ENCODER,
+                    "-ac",
+                    "2",
+                ]
+            )
             flags.extend(encoder_default_config.options)
         else:
-            flags.extend([
-                "-c:a", "copy",
-            ])
+            flags.extend(
+                [
+                    "-c:a",
+                    "copy",
+                ]
+            )
 
     return flags
 
@@ -416,20 +447,22 @@ def build_encode_cmd(job: Job):
     v = next(s for s in job.meta["streams"] if s["codec_type"] == "video")
     codec_name = v.get("codec_name")
 
-    print(f'Found video codec {codec_name}')
+    print(f"Found video codec {codec_name}")
 
-    cmd.extend([
-        "-fflags",
-        "+genpts+fastseek",
-        "-i",
-        str(job.src),
-        "-movflags",
-        "+faststart",
-        "-g",
-        "60",
-        "-map",
-        "0:v:0",
-    ])
+    cmd.extend(
+        [
+            "-fflags",
+            "+genpts+fastseek",
+            "-i",
+            str(job.src),
+            "-movflags",
+            "+faststart",
+            "-g",
+            "60",
+            "-map",
+            "0:v:0",
+        ]
+    )
 
     if job.encode_options.video:
         vfilters = []
@@ -437,7 +470,9 @@ def build_encode_cmd(job: Job):
         need_downscale = int(v.get("coded_height", 0)) > MAX_HEIGHT
 
         # Only use the CUDA scaler if we also decoded on CUDA (i.e. input was H.264)
-        if job.opts.encoder == "h264_nvenc" and (codec_name == "h264" or codec_name == "hevc"):
+        if job.opts.encoder == "h264_nvenc" and (
+            codec_name == "h264" or codec_name == "hevc"
+        ):
             if need_downscale:
                 vfilters.append(f"scale_cuda=-2:{MAX_HEIGHT}:format=yuv420p")
             else:
@@ -445,7 +480,7 @@ def build_encode_cmd(job: Job):
         else:
             # either CPU‐only path or non‐H.264 input → use normal scale
             if need_downscale:
-                vfilters.append(f'scale=-2:{MAX_HEIGHT}')
+                vfilters.append(f"scale=-2:{MAX_HEIGHT}")
 
         vf = ",".join(vfilters) if vfilters else None
 
@@ -480,11 +515,15 @@ def build_encode_cmd(job: Job):
 
     srt_file = job.src.with_suffix(".srt")
     if srt_file.exists():
-        print(f'Found subtitle {srt_file}')
-        cmd.extend([
-            "-i", str(srt_file),
-            "-map", "1:s",
-        ])
+        print(f"Found subtitle {srt_file}")
+        cmd.extend(
+            [
+                "-i",
+                str(srt_file),
+                "-map",
+                "1:s",
+            ]
+        )
 
     cmd.extend(get_audio_flags(job))
     cmd.extend(get_subtitle_flags(job))
@@ -512,7 +551,7 @@ def process(job: Job):
     if job.action == Action.SKIP:
         log("✓", C.GRN, "Direct-play already supported", job.src)
         return
-    
+
     # 2) If dst exists and is good, skip; if stub or bad, prepare to overwrite
     if job.dst.exists() and is_stub(job.dst):
         log("⚠", C.YEL, "Stub file detected; will overwrite", job.dst)
@@ -520,7 +559,7 @@ def process(job: Job):
 
     cmd: list[str] = []
     tmp_out: Path | None = None
-    
+
     # 3) Build the ffmpeg command
     if job.action == Action.ENCODE:
         cmd, tmp_out = build_encode_cmd(job)
@@ -534,13 +573,13 @@ def process(job: Job):
     # 4) Run ffmpeg, but don't let a non-zero exit kill the whole batch
     try:
         for x in cmd:
-            if type(x) != str:
+            if not isinstance(x, str):
                 print(f"Found non string value {x} in cmd")
 
-        print_cmd = ' '.join(cmd)
+        print_cmd = " ".join(cmd)
         print(f"FFmpeg command: {print_cmd}")
         if job.opts.debug is True:
-            with open(str(job.dst) + ".txt", "w") as f:
+            with open(str(job.dst) + ".txt", "w", encoding="utf8") as f:
                 f.write(print_cmd)
 
         subprocess.run(cmd, check=True, cwd=os.getcwd())
@@ -575,9 +614,16 @@ def gather_files(roots, exts, limit: int) -> List[Path]:
 
         print(f"Scanning {root} …")
         for p in Path(root).rglob("*"):
-            # skip dot-files created by macOS (._foo, .DS_Store, etc.)
-            if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in exts and not any(
-                    ignore in p.name for ignore in IGNORE_SUFFIXES):
+            # skip hidden or dot-files created by macOS (._foo, .DS_Store, etc.)
+            if p.name.startswith("."):
+                continue
+
+            if (
+                p.is_file()
+                and not p.name.startswith(".")
+                and p.suffix.lower() in exts
+                and not any(ignore in p.name for ignore in IGNORE_SUFFIXES)
+            ):
                 files.append(p)
                 if limit != 0 and len(files) >= limit:
                     return files
@@ -587,8 +633,10 @@ def gather_files(roots, exts, limit: int) -> List[Path]:
 
 def main():
     setup_ffmpeg_path()
-    p = argparse.ArgumentParser(description="Pre-encode / remux videos for Chromecast.",
-                                formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    p = argparse.ArgumentParser(
+        description="Pre-encode / remux videos for Chromecast.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     p.add_argument("roots", nargs="+", help="Root directories to scan & convert.")
     p.add_argument(
         "-j",
@@ -607,7 +655,7 @@ def main():
     p.add_argument(
         "-d",
         "--delete-original",
-        action='store_true',
+        action="store_true",
         default=False,
         help="Remove source file after successful processing.",
     )
@@ -638,21 +686,21 @@ def main():
     p.add_argument(
         "--skip-video",
         "-sv",
-        action='store_true',
+        action="store_true",
         default=False,
         help="Never transcode video.",
     )
     p.add_argument(
         "--skip-subtitles",
         "-ss",
-        action='store_true',
+        action="store_true",
         default=False,
         help="Never transcode subtitles.",
     )
     p.add_argument(
         "--skip-audio",
         "--sa",
-        action='store_true',
+        action="store_true",
         default=False,
         help="Never transcode video.",
     )
@@ -663,7 +711,7 @@ def main():
     )
     p.add_argument(
         "--debug",
-        action='store_true',
+        action="store_true",
         default=False,
         help="Create a .txt file next to destination with ffmpeg command.",
     )
@@ -681,7 +729,7 @@ def main():
             "Windows": "winget install Gyan.FFmpeg",
             "Darwin": "brew install ffmpeg",
             "Linux": "sudo apt install ffmpeg   # Debian/Ubuntu\n"
-                     "  sudo dnf install ffmpeg   # Fedora/RHEL",
+            "  sudo dnf install ffmpeg   # Fedora/RHEL",
         }.get(platform.system(), "Install ffmpeg from your package manager")
 
         msg = textwrap.dedent(
@@ -699,12 +747,15 @@ def main():
     # -- Detect hardware encoder once --------------------------
     encoders = run(["ffmpeg", "-v", "quiet", "-encoders"])
     if opts.encoder not in encoders:
-        raise ValueError(f"Provided encoder {opts.encoder} does not exists or is not supported by current ffmpeg installation", f"Valid encoders are {encoders}")
-    
+        raise ValueError(
+            f"Provided encoder {opts.encoder} does not exists or is not supported by current ffmpeg installation",
+            f"Valid encoders are {encoders}",
+        )
+
     exts = {e if e.startswith(".") else f".{e}" for e in opts.exts.split(",")}
 
     # On Windows, cmd path auto completion when dir has spaces may be interpreted here as escaped quote. Example: 'C:\path\to\some dir\'
-    opts.roots = [r.strip('\'"') for r in opts.roots]
+    opts.roots = [r.strip("'\"") for r in opts.roots]
 
     print("Parsed roots:", opts.roots)
     for r in opts.roots:
