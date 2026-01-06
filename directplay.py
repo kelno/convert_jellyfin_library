@@ -589,15 +589,9 @@ def process(job: Job):
     # 5) On success: atomic swap & optional delete
     if tmp_out and tmp_out.exists():
         if job.dst.exists():
-            # special case if we want the same name, use a new file name
-            if job.src == job.dst:
-                new_file = job.dst.with_stem(".directplay" + job.dst.stem)
-                job.dst.replace(new_file)
-                log("⚠", C.YEL, "New file will be named", new_file)
-            else:
-                bak_file = job.dst.with_stem(job.dst.stem + ".bak")
-                job.dst.replace(bak_file)
-                log("⚠", C.YEL, "Existing file will renamed to", bak_file)
+            bak_file = job.dst.with_stem(job.dst.name + ".bak")
+            job.dst.replace(bak_file)
+            log("⚠", C.YEL, "Existing file will renamed to", bak_file)
 
         tmp_out.rename(job.dst)
 
